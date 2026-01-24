@@ -18,7 +18,13 @@ A comprehensive Model Context Protocol (MCP) server for ServiceNow ITSM with **b
 
 ## Installation
 
-### NPM (Coming Soon)
+### NPM
+
+```bash
+npm install servicenow-mcp
+```
+
+Or install globally:
 
 ```bash
 npm install -g servicenow-mcp
@@ -27,7 +33,7 @@ npm install -g servicenow-mcp
 ### From Source
 
 ```bash
-git clone https://github.com/yourusername/servicenow-mcp.git
+git clone https://github.com/schwarztim/servicenow-mcp.git
 cd servicenow-mcp
 npm install
 npm run build
@@ -170,8 +176,8 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for de
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/servicenow-mcp/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/servicenow-mcp/discussions)
+- **Issues**: [GitHub Issues](https://github.com/schwarztim/servicenow-mcp/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/schwarztim/servicenow-mcp/discussions)
 
 ## Acknowledgments
 

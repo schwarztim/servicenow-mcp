@@ -4,11 +4,44 @@
   "description": "MCP server for ServiceNow ITSM with browser-based SSO authentication",
   "type": "module",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "author": "Timothy Schwarz",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/schwarztim/servicenow-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/schwarztim/servicenow-mcp/issues"
+  },
+  "homepage": "https://github.com/schwarztim/servicenow-mcp#readme",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "servicenow",
+    "itsm",
+    "sso",
+    "browser-automation",
+    "playwright",
+    "claude",
+    "ai",
+    "llm"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    ".env.example"
+  ],
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "auth": "tsx src/auth-browser.ts",
+    "prepublishOnly": "npm run build",
     "postinstall": "playwright install chromium"
   },
   "dependencies": {

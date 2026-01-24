@@ -12,7 +12,7 @@ Thank you for your interest in contributing! This document provides guidelines f
 
 ### Reporting Bugs
 
-1. Check if the bug has already been reported in [Issues](https://github.com/yourusername/servicenow-mcp/issues)
+1. Check if the bug has already been reported in [Issues](https://github.com/schwarztim/servicenow-mcp/issues)
 2. If not, create a new issue with:
    - Clear, descriptive title
    - Steps to reproduce
@@ -21,7 +21,7 @@ Thank you for your interest in contributing! This document provides guidelines f
 
 ### Suggesting Features
 
-1. Check [Discussions](https://github.com/yourusername/servicenow-mcp/discussions) for similar ideas
+1. Check [Discussions](https://github.com/schwarztim/servicenow-mcp/discussions) for similar ideas
 2. Create a new discussion or issue describing:
    - The problem you're trying to solve
    - Your proposed solution
@@ -61,7 +61,7 @@ Thank you for your interest in contributing! This document provides guidelines f
 
 ```bash
 # Clone your fork
-git clone https://github.com/yourusername/servicenow-mcp.git
+git clone https://github.com/schwarztim/servicenow-mcp.git
 cd servicenow-mcp
 
 # Install dependencies
@@ -102,7 +102,7 @@ When adding new tools:
 
 Feel free to:
 
-- Open a [Discussion](https://github.com/yourusername/servicenow-mcp/discussions)
+- Open a [Discussion](https://github.com/schwarztim/servicenow-mcp/discussions)
 - Ask in your pull request
 - Reach out to maintainers
 
