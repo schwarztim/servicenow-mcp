@@ -4,6 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue.svg)](https://www.typescriptlang.org/)
 [![MCP](https://img.shields.io/badge/MCP-1.0-green.svg)](https://modelcontextprotocol.io)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue.svg)](https://github.com/schwarztim/servicenow-mcp)
 
 A comprehensive Model Context Protocol (MCP) server for ServiceNow ITSM with **browser-based SSO authentication** support.
 
@@ -32,12 +33,24 @@ npm install -g servicenow-mcp
 
 ### From Source
 
+**Linux/macOS:**
+
 ```bash
 git clone https://github.com/schwarztim/servicenow-mcp.git
 cd servicenow-mcp
 npm install
 npm run build
 ```
+
+**Windows:**
+
+```powershell
+git clone https://github.com/schwarztim/servicenow-mcp.git
+cd servicenow-mcp
+.\scripts\install.ps1
+```
+
+> 📝 **Windows Users**: See [WINDOWS.md](WINDOWS.md) for detailed Windows installation guide, including path configuration, PowerShell setup, and troubleshooting.
 
 ## Authentication Methods
 
@@ -138,7 +151,10 @@ After browser authentication:
 
 ## Configuration
 
-Add to `~/.claude/user-mcps.json`:
+Add to your Claude configuration file:
+
+**Linux/macOS:** `~/.claude/user-mcps.json`
+**Windows:** `%USERPROFILE%\.claude\user-mcps.json`
 
 ```json
 {
@@ -154,6 +170,18 @@ Add to `~/.claude/user-mcps.json`:
     }
   }
 }
+```
+
+**Windows users**: Use double backslashes in paths:
+
+```json
+"args": ["C:\\Users\\YourName\\servicenow-mcp\\dist\\index.js"]
+```
+
+Or use forward slashes (also works on Windows):
+
+```json
+"args": ["C:/Users/YourName/servicenow-mcp/dist/index.js"]
 ```
 
 ## Troubleshooting

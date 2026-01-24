@@ -8,11 +8,24 @@
 
 import { chromium, type Cookie } from "playwright";
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, platform } from "node:os";
 import { join } from "node:path";
 
 const COOKIE_DIR = join(homedir(), ".servicenow-mcp");
 const COOKIE_FILE = join(COOKIE_DIR, "cookies.json");
+
+// Cross-platform user agent
+function getUserAgent(): string {
+  const os = platform();
+  if (os === "win32") {
+    return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+  } else if (os === "darwin") {
+    return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+  } else {
+    // Linux and others
+    return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+  }
+}
 
 export interface AuthResult {
   success: boolean;
@@ -38,8 +51,7 @@ export async function authenticateViaBrowser(
 
   const context = await browser.newContext({
     viewport: { width: 1280, height: 800 },
-    userAgent:
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    userAgent: getUserAgent(),
   });
 
   const page = await context.newPage();
