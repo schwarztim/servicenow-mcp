@@ -812,6 +812,198 @@ const TOOLS: Tool[] = [
   },
 
   // -------------------------------------------------------------------------
+  // IT SERVICE PORTAL (ITSP) HELPERS
+  // -------------------------------------------------------------------------
+  {
+    name: "itsp_parse_url",
+    description:
+      "Parse an IT Service Portal (ITSP) URL to extract catalog item information. Extracts sys_id, table name, and instance URL from portal links like 'https://instance.service-now.com/itsp?id=sc_cat_item&sys_id=xxx'",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "Full ITSP URL from the portal",
+        },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "itsp_get_item_details",
+    description:
+      "Get full catalog item details from an ITSP URL. Automatically parses the URL and fetches item name, description, variables/questions, and all metadata needed for ordering.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "ITSP portal URL for the catalog item",
+        },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "itsp_submit_request",
+    description:
+      "Submit a service request directly from an ITSP URL. Streamlined workflow: parses URL, validates variables, and submits the request in one step.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "ITSP portal URL for the catalog item",
+        },
+        variables: {
+          type: "object",
+          description:
+            "Variable values for the request (field name: value pairs)",
+          additionalProperties: true,
+        },
+        requested_for: {
+          type: "string",
+          description: "User sys_id to request for (defaults to current user)",
+        },
+        quantity: {
+          type: "number",
+          description: "Quantity to request",
+          default: 1,
+        },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "requests_get_details",
+    description:
+      "Get detailed information about a service request including status, requested items, approval status, and activity history. More comprehensive than requests_list.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        request_number: {
+          type: "string",
+          description: "Request number (e.g., REQ0010001) or sys_id",
+        },
+      },
+      required: ["request_number"],
+    },
+  },
+  {
+    name: "requests_get_my_recent",
+    description:
+      "Get recent service requests for current user with full details. Returns last 10 requests with status, items, and approval information.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: {
+          type: "number",
+          description: "Number of recent requests to return",
+          default: 10,
+        },
+      },
+    },
+  },
+  {
+    name: "record_producer_submit",
+    description:
+      "Submit a Record Producer request. Record Producers create records directly (like incidents) without using the cart. Use this for incident creation, problem reporting, and other single-record submissions from the service catalog.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        producer_id: {
+          type: "string",
+          description: "Record Producer sys_id or catalog item sys_id",
+        },
+        variables: {
+          type: "object",
+          description: "Variable values for the record producer",
+          additionalProperties: true,
+        },
+      },
+      required: ["producer_id"],
+    },
+  },
+  {
+    name: "record_producer_get_details",
+    description:
+      "Get details about a Record Producer including its variables and target table. Helps understand what fields are needed before submission.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        producer_id: {
+          type: "string",
+          description: "Record Producer sys_id",
+        },
+      },
+      required: ["producer_id"],
+    },
+  },
+  {
+    name: "order_guide_submit",
+    description:
+      "Submit an Order Guide request. Order Guides bundle multiple catalog items into a single request, creating multiple requested items (RITMs). Use this for requesting multiple related items at once.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guide_id: {
+          type: "string",
+          description: "Order Guide sys_id",
+        },
+        items: {
+          type: "array",
+          description:
+            "Array of items to include in the order guide, each with item_id and variables",
+          items: {
+            type: "object",
+            properties: {
+              item_id: { type: "string" },
+              variables: { type: "object", additionalProperties: true },
+              quantity: { type: "number", default: 1 },
+            },
+            required: ["item_id"],
+          },
+        },
+        requested_for: {
+          type: "string",
+          description: "User sys_id to request for (defaults to current user)",
+        },
+      },
+      required: ["guide_id", "items"],
+    },
+  },
+  {
+    name: "order_guide_get_details",
+    description:
+      "Get details about an Order Guide including available items, categories, and variables. Helps understand what items can be included before submission.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guide_id: {
+          type: "string",
+          description: "Order Guide sys_id",
+        },
+      },
+      required: ["guide_id"],
+    },
+  },
+  {
+    name: "catalog_detect_item_type",
+    description:
+      "Automatically detect the type of catalog item (Standard, Record Producer, Order Guide, or Content). Returns the item type and appropriate submission method to use.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        item_id: {
+          type: "string",
+          description: "Catalog item sys_id or ITSP URL",
+        },
+      },
+      required: ["item_id"],
+    },
+  },
+
+  // -------------------------------------------------------------------------
   // IMPORT SET API
   // -------------------------------------------------------------------------
   {
@@ -2114,6 +2306,243 @@ class ServiceNowClient {
     );
   }
 
+  // IT Service Portal (ITSP) Helpers
+  parseItspUrl(url: string): {
+    sys_id: string;
+    table: string;
+    instance_url: string;
+  } {
+    try {
+      const urlObj = new URL(url);
+      const params = new URLSearchParams(urlObj.search);
+
+      const sys_id = params.get("sys_id");
+      const table = params.get("id") || "sc_cat_item";
+      const instance_url = `${urlObj.protocol}//${urlObj.host}`;
+
+      if (!sys_id) {
+        throw new Error("No sys_id found in ITSP URL");
+      }
+
+      return { sys_id, table, instance_url };
+    } catch (error) {
+      throw new Error(
+        `Invalid ITSP URL: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  async itspGetItemDetails(url: string): Promise<unknown> {
+    const { sys_id, table } = this.parseItspUrl(url);
+
+    // Get catalog item details
+    const item = await this.tableGet(table, sys_id);
+
+    // Get variables/questions for the item
+    const variables = await this.catalogGetVariables(sys_id);
+
+    return {
+      item,
+      variables,
+      parsed_url: { sys_id, table },
+    };
+  }
+
+  async itspSubmitRequest(
+    url: string,
+    variables: Record<string, unknown>,
+    requestedFor?: string,
+    quantity?: number,
+  ): Promise<unknown> {
+    const { sys_id } = this.parseItspUrl(url);
+
+    // Use catalog_order_now for direct submission
+    return this.catalogOrderNow(sys_id, quantity || 1, variables, requestedFor);
+  }
+
+  async requestsGetDetails(requestNumber: string): Promise<unknown> {
+    // Resolve request number to sys_id if needed
+    const requestId = await this.resolveId("sc_request", requestNumber);
+
+    // Get request details
+    const request = await this.tableGet("sc_request", requestId);
+
+    // Get requested items
+    const items = await this.tableQuery("sc_req_item", {
+      query: `request=${requestId}`,
+      fields: "number,short_description,stage,state,cat_item,quantity",
+    });
+
+    // Get approval records
+    const approvals = await this.tableQuery("sysapproval_approver", {
+      query: `sysapproval=${requestId}`,
+      fields: "state,approver,comments,sys_created_on",
+    });
+
+    // Get activity history
+    const activities = await this.tableQuery("sys_journal_field", {
+      query: `element_id=${requestId}`,
+      fields: "element,value,sys_created_on,sys_created_by",
+      limit: 20,
+    });
+
+    return {
+      request,
+      items,
+      approvals,
+      activities,
+    };
+  }
+
+  async requestsGetMyRecent(limit: number = 10): Promise<unknown> {
+    const requests = await this.tableQuery("sc_request", {
+      query: "requested_forDYNAMIC90d1921e5f510100a9ad2572f2b477fe",
+      fields:
+        "number,short_description,request_state,opened_at,requested_for,stage",
+      limit,
+      orderBy: "sys_created_on DESC",
+    });
+
+    // For each request, get items summary
+    const results = [];
+    for (const req of (requests as any).result || []) {
+      const items = await this.tableQuery("sc_req_item", {
+        query: `request=${req.sys_id}`,
+        fields: "number,short_description,state",
+        limit: 5,
+      });
+
+      results.push({
+        ...req,
+        items: (items as any).result || [],
+      });
+    }
+
+    return { result: results };
+  }
+
+  // Record Producer support
+  async recordProducerSubmit(
+    producerId: string,
+    variables: Record<string, unknown>,
+  ): Promise<unknown> {
+    // Record Producers use the same endpoint as catalog items but don't use cart
+    // They directly create records in the target table
+    return this.request(
+      "POST",
+      `/api/sn_sc/servicecatalog/items/${producerId}/submit_producer`,
+      { variables },
+    );
+  }
+
+  async recordProducerGetDetails(producerId: string): Promise<unknown> {
+    // Get the catalog item details
+    const item = await this.tableGet("sc_cat_item_producer", producerId);
+
+    // Get variables for the producer
+    const variables = await this.catalogGetVariables(producerId);
+
+    return {
+      item,
+      variables,
+      type: "record_producer",
+    };
+  }
+
+  // Order Guide support
+  async orderGuideSubmit(
+    guideId: string,
+    items: Array<{
+      item_id: string;
+      variables: Record<string, unknown>;
+      quantity?: number;
+    }>,
+    requestedFor?: string,
+  ): Promise<unknown> {
+    const body: Record<string, unknown> = {
+      items: items.map((item) => ({
+        sys_id: item.item_id,
+        quantity: item.quantity || 1,
+        variables: item.variables,
+      })),
+    };
+    if (requestedFor) body.requested_for = requestedFor;
+
+    return this.request(
+      "POST",
+      `/api/sn_sc/servicecatalog/items/${guideId}/submit_guide`,
+      body,
+    );
+  }
+
+  async orderGuideGetDetails(guideId: string): Promise<unknown> {
+    // Get the order guide details
+    const guide = await this.tableGet("sc_cat_item_guide", guideId);
+
+    // Get available items in the guide
+    const items = await this.tableQuery("sc_cat_item_guide_items", {
+      query: `guide=${guideId}`,
+      fields: "cat_item,name,mandatory",
+    });
+
+    return {
+      guide,
+      items: (items as any).result || [],
+      type: "order_guide",
+    };
+  }
+
+  // Detect catalog item type
+  async catalogDetectItemType(itemId: string): Promise<{
+    type: "standard" | "record_producer" | "order_guide" | "content";
+    item: unknown;
+    submission_method: string;
+  }> {
+    // If it's a URL, parse it first
+    let sys_id = itemId;
+    if (itemId.startsWith("http")) {
+      const parsed = this.parseItspUrl(itemId);
+      sys_id = parsed.sys_id;
+    }
+
+    // Get the catalog item
+    const item = await this.tableGet("sc_cat_item", sys_id);
+    const itemData = item as any;
+
+    // Check the type field or class
+    let type: "standard" | "record_producer" | "order_guide" | "content" =
+      "standard";
+    let submission_method = "catalog_order_now";
+
+    // Check if it's a record producer
+    if (
+      itemData.sys_class_name === "sc_cat_item_producer" ||
+      itemData.type === "record_producer"
+    ) {
+      type = "record_producer";
+      submission_method = "record_producer_submit";
+    }
+    // Check if it's an order guide
+    else if (
+      itemData.sys_class_name === "sc_cat_item_guide" ||
+      itemData.type === "order_guide"
+    ) {
+      type = "order_guide";
+      submission_method = "order_guide_submit";
+    }
+    // Check if it's content only
+    else if (itemData.type === "content" || itemData.no_cart === "true") {
+      type = "content";
+      submission_method = "none";
+    }
+
+    return {
+      type,
+      item: itemData,
+      submission_method,
+    };
+  }
+
   // Import Set API
   async importSetLoad(
     table: string,
@@ -2844,6 +3273,54 @@ class ServiceNowMcpServer {
           (args.variables as Record<string, unknown>) || {},
           args.requested_for as string,
         );
+
+      // IT Service Portal (ITSP) Helpers
+      case "itsp_parse_url":
+        return this.client.parseItspUrl(args.url as string);
+
+      case "itsp_get_item_details":
+        return this.client.itspGetItemDetails(args.url as string);
+
+      case "itsp_submit_request":
+        return this.client.itspSubmitRequest(
+          args.url as string,
+          (args.variables as Record<string, unknown>) || {},
+          args.requested_for as string,
+          args.quantity as number,
+        );
+
+      case "requests_get_details":
+        return this.client.requestsGetDetails(args.request_number as string);
+
+      case "requests_get_my_recent":
+        return this.client.requestsGetMyRecent((args.limit as number) || 10);
+
+      // Record Producer & Order Guide
+      case "record_producer_submit":
+        return this.client.recordProducerSubmit(
+          args.producer_id as string,
+          (args.variables as Record<string, unknown>) || {},
+        );
+
+      case "record_producer_get_details":
+        return this.client.recordProducerGetDetails(args.producer_id as string);
+
+      case "order_guide_submit":
+        return this.client.orderGuideSubmit(
+          args.guide_id as string,
+          args.items as Array<{
+            item_id: string;
+            variables: Record<string, unknown>;
+            quantity?: number;
+          }>,
+          args.requested_for as string,
+        );
+
+      case "order_guide_get_details":
+        return this.client.orderGuideGetDetails(args.guide_id as string);
+
+      case "catalog_detect_item_type":
+        return this.client.catalogDetectItemType(args.item_id as string);
 
       // Import Set API
       case "import_set_load":

@@ -13,7 +13,9 @@ A comprehensive Model Context Protocol (MCP) server for ServiceNow ITSM with **b
 ## Features
 
 - **Browser Authentication**: Log in via your enterprise SSO (Okta, Azure AD, etc.) - no API keys needed
-- **70+ Tools**: Incidents, Changes, Problems, Catalog, CMDB, Knowledge Base, Users, Approvals, and more
+- **80+ Tools**: Incidents, Changes, Problems, Catalog, CMDB, Knowledge Base, Users, Approvals, and more
+- **Complete Request Type Coverage**: Standard catalog items, Record Producers, Order Guides, and Content Items
+- **IT Service Portal Integration**: Direct submission from ITSP URLs
 - **GraphQL & REST Support**: Works with both ServiceNow APIs
 - **Session Management**: Automatic cookie handling and refresh
 
@@ -102,6 +104,36 @@ After browser authentication:
 > Search CMDB for servers in the Atlanta datacenter
 ```
 
+### IT Service Portal (ITSP) Workflows
+
+Submit requests directly from portal URLs (auto-detects Standard/Producer/Guide):
+
+```
+> Get details for this catalog item: https://instance.service-now.com/itsp?id=sc_cat_item&sys_id=xxx
+> Submit request for this ITSP item: https://instance.service-now.com/itsp?id=sc_cat_item&sys_id=xxx
+> Show my recent service requests with details
+```
+
+### All Request Types Supported
+
+**Standard Items** (laptops, software, access requests):
+
+```
+> Order item a5a360ffdb10fb80ec8dfb61d9619ea with variables {location: "Building A"}
+```
+
+**Record Producers** (create incidents, problems):
+
+```
+> Submit record producer for incident with description "Network outage"
+```
+
+**Order Guides** (multi-item bundles):
+
+```
+> Submit order guide with items [laptop, monitor, keyboard]
+```
+
 ## Available Tools
 
 ### Incidents
@@ -119,12 +151,38 @@ After browser authentication:
 - `changes_create` - Create change request
 - `changes_tasks` - Get change tasks
 
-### Service Catalog
+### Service Catalog (All Request Types)
+
+**Standard Catalog Items** (cart-based ordering):
 
 - `catalog_items` - Browse catalog items
 - `catalog_item_get` - Get item details
 - `catalog_order` - Order catalog item
+- `catalog_order_now` - Single-step ordering
+- `catalog_add_to_cart` / `catalog_submit_cart` - Multi-item ordering
+
+**Record Producers** (direct record creation):
+
+- `record_producer_submit` - Submit record producer (creates incidents, problems, etc.)
+- `record_producer_get_details` - Get record producer details and variables
+
+**Order Guides** (multi-item bundles):
+
+- `order_guide_submit` - Submit order guide with multiple items
+- `order_guide_get_details` - Get order guide details and available items
+
+**Detection & Helpers**:
+
+- `catalog_detect_item_type` - Auto-detect item type (Standard/Producer/Guide/Content)
 - `catalog_requests` - List requests
+
+### IT Service Portal (ITSP)
+
+- `itsp_parse_url` - Extract catalog item info from portal URLs
+- `itsp_get_item_details` - Get item details from ITSP URL
+- `itsp_submit_request` - Submit request directly from ITSP URL (auto-detects type)
+- `requests_get_details` - Get detailed request information
+- `requests_get_my_recent` - Get recent requests with full details
 
 ### CMDB
 
