@@ -29,6 +29,7 @@ import {
   importCookies,
   refreshSession,
 } from "./auth-browser.js";
+import { BrowserAuthManager } from "./browser-auth.js";
 
 // Configuration from environment
 const INSTANCE_URL = process.env.SERVICENOW_INSTANCE_URL || "";
@@ -1925,6 +1926,7 @@ class ServiceNowClient {
   private sessionCookies: string;
   private userToken: string;
   private authMethod: "browser" | "basic" | "session" | "none";
+  private authManager: BrowserAuthManager | null = null;
 
   constructor() {
     // Priority: Browser auth > Basic auth > Session tokens
@@ -1935,7 +1937,13 @@ class ServiceNowClient {
       this.sessionCookies = browserAuth.cookies;
       this.userToken = browserAuth.userToken;
       this.authMethod = "browser";
-      console.error("Using browser-based SSO authentication");
+      // Initialize auto-renewing auth manager
+      this.authManager = new BrowserAuthManager(
+        "servicenow",
+        browserAuth.instanceUrl,
+        browserAuth.instanceUrl,
+      );
+      console.error("Using browser-based SSO authentication with auto-renewal");
     } else if (USERNAME && PASSWORD) {
       // Basic auth for REST Table API
       this.baseUrl = INSTANCE_URL.replace(/\/$/, "");
@@ -2050,66 +2058,85 @@ class ServiceNowClient {
     this.checkConfig();
 
     const url = `${this.baseUrl}${endpoint}`;
-    const headers: Record<string, string> = {
+    const baseHeaders: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "application/json",
     };
 
-    // Apply authentication based on method
-    if (this.authMethod === "browser" && this.sessionCookies) {
-      // Browser auth - use cookies for all requests
-      headers["Cookie"] = this.sessionCookies;
-      if (this.userToken) {
-        headers["x-usertoken"] = this.userToken;
-      }
-    } else if (useGraphQL && this.userToken) {
-      headers["x-usertoken"] = this.userToken;
-      if (this.sessionCookies) {
-        headers["Cookie"] = this.sessionCookies;
-      }
-    } else if (this.authHeader) {
-      headers["Authorization"] = this.authHeader;
-    } else {
-      throw new Error(
-        "No authentication configured. Options:\n" +
-          "1. Use auth_browser tool to authenticate via SSO in browser\n" +
-          "2. Set SERVICENOW_USERNAME + SERVICENOW_PASSWORD (for REST API)\n" +
-          "3. Set SERVICENOW_SESSION_TOKEN + SERVICENOW_USER_TOKEN (for session auth)",
-      );
-    }
+    // Auto-retry wrapper for browser auth
+    const makeAuthenticatedRequest = async (retries = 1): Promise<unknown> => {
+      const headers = { ...baseHeaders };
 
-    let response = await fetch(url, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    });
-
-    // Handle 401 with automatic cookie reload and retry (browser auth only)
-    if (response.status === 401 && this.authMethod === "browser") {
-      console.error("⚠️  Received 401 - attempting to reload cookies...");
-
-      if (this.reloadCredentials()) {
-        // Update headers with new cookies and retry
+      // Apply authentication based on method
+      if (this.authMethod === "browser" && this.authManager) {
+        // Use auto-renewing auth manager (automatically refreshes if expired)
+        try {
+          const authData = await this.authManager.getAuthData();
+          headers["Cookie"] = authData.cookies;
+          if (authData.headers["X-UserToken"]) {
+            headers["x-usertoken"] = authData.headers["X-UserToken"];
+          }
+        } catch (error) {
+          // Auth manager will have triggered browser re-auth if needed
+          throw error;
+        }
+      } else if (this.authMethod === "browser" && this.sessionCookies) {
+        // Fallback to static cookies if auth manager not initialized
         headers["Cookie"] = this.sessionCookies;
         if (this.userToken) {
           headers["x-usertoken"] = this.userToken;
         }
-
-        console.error("🔄 Retrying request with refreshed cookies...");
-        response = await fetch(url, {
-          method,
-          headers,
-          body: body ? JSON.stringify(body) : undefined,
-        });
+      } else if (useGraphQL && this.userToken) {
+        headers["x-usertoken"] = this.userToken;
+        if (this.sessionCookies) {
+          headers["Cookie"] = this.sessionCookies;
+        }
+      } else if (this.authHeader) {
+        headers["Authorization"] = this.authHeader;
+      } else {
+        throw new Error(
+          "No authentication configured. Options:\n" +
+            "1. Use auth_browser tool to authenticate via SSO in browser\n" +
+            "2. Set SERVICENOW_USERNAME + SERVICENOW_PASSWORD (for REST API)\n" +
+            "3. Set SERVICENOW_SESSION_TOKEN + SERVICENOW_USER_TOKEN (for session auth)",
+        );
       }
-    }
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`ServiceNow API error ${response.status}: ${errorText}`);
-    }
+      const response = await fetch(url, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+      });
 
-    return response.json();
+      // Handle auth errors with auto-renewal
+      if (
+        (response.status === 401 || response.status === 403) &&
+        this.authMethod === "browser" &&
+        this.authManager &&
+        retries > 0
+      ) {
+        console.error("⚠️  Authentication failed. Triggering auto-renewal...");
+
+        // Trigger auto-renewal via auth manager
+        await this.authManager.handleAuthError({
+          response: { status: response.status },
+        });
+
+        // Retry the request with fresh credentials
+        return makeAuthenticatedRequest(retries - 1);
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(
+          `ServiceNow API error ${response.status}: ${errorText}`,
+        );
+      }
+
+      return response.json();
+    };
+
+    return makeAuthenticatedRequest();
   }
 
   // REST Table API methods
