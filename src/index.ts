@@ -23,7 +23,12 @@ import {
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { loadCookies, authenticateViaBrowser } from "./auth-browser.js";
+import {
+  loadCookies,
+  authenticateViaBrowser,
+  importCookies,
+  refreshSession,
+} from "./auth-browser.js";
 
 // Configuration from environment
 const INSTANCE_URL = process.env.SERVICENOW_INSTANCE_URL || "";
@@ -78,6 +83,41 @@ const TOOLS: Tool[] = [
     name: "auth_status",
     description:
       "Check current authentication status. Shows which auth method is configured and whether credentials/cookies are valid.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
+    name: "auth_import_cookies",
+    description:
+      "Import authentication cookies from an external source. Use this when you already have an authenticated browser session (e.g., via Firefox DevTools) and want to transfer those credentials to the MCP. Extract cookies and x-usertoken from network request headers.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        instance_url: {
+          type: "string",
+          description:
+            "ServiceNow instance URL (e.g., https://mycompany.service-now.com)",
+        },
+        cookies: {
+          type: "string",
+          description:
+            "Cookie header string from authenticated request (e.g., 'JSESSIONID=abc123; glide_user_route=xyz')",
+        },
+        user_token: {
+          type: "string",
+          description:
+            "x-usertoken header value from authenticated request (optional but recommended for CSRF protection)",
+        },
+      },
+      required: ["instance_url", "cookies"],
+    },
+  },
+  {
+    name: "auth_refresh",
+    description:
+      "Refresh the current session by re-authenticating via browser. Uses the previously authenticated instance URL. Useful when session has expired.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -2907,6 +2947,56 @@ class ServiceNowMcpServer {
           sessionValid: validation.valid,
           validationError: validation.error,
         };
+      }
+
+      case "auth_import_cookies": {
+        const instanceUrl = args.instance_url as string;
+        const cookies = args.cookies as string;
+        const userToken = args.user_token as string | undefined;
+
+        if (!instanceUrl || !cookies) {
+          throw new Error(
+            "Required: instance_url and cookies. Extract these from an authenticated browser session's network request headers.",
+          );
+        }
+
+        const result = importCookies(instanceUrl, cookies, userToken);
+        if (result.success) {
+          // Hot-reload credentials without requiring restart
+          const reloaded = this.client.reloadCredentials();
+          return {
+            status: "success",
+            message: reloaded
+              ? "Cookies imported and credentials reloaded - ready to use immediately."
+              : "Cookies imported and saved. Note: If this is first auth, you may need to restart Claude.",
+            instanceUrl,
+            hasUserToken: !!userToken,
+            credentialsReloaded: reloaded,
+          };
+        } else {
+          throw new Error(result.error || "Cookie import failed");
+        }
+      }
+
+      case "auth_refresh": {
+        const result = await refreshSession();
+        if (result.success) {
+          const reloaded = this.client.reloadCredentials();
+          return {
+            status: "success",
+            message: reloaded
+              ? "Session refreshed. Credentials reloaded - ready to use immediately."
+              : "Session refreshed. Cookies saved.",
+            instanceUrl: result.instanceUrl,
+            cookieCount: result.cookies.length,
+            hasUserToken: !!result.userToken,
+            credentialsReloaded: reloaded,
+          };
+        } else {
+          throw new Error(
+            result.error || "Session refresh failed. Use auth_browser instead.",
+          );
+        }
       }
 
       // Unified Work Queue

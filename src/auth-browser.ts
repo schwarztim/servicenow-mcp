@@ -6,7 +6,7 @@
  * Cookies are saved to ~/.servicenow-mcp/cookies.json for MCP to use.
  */
 
-import { chromium, type Cookie } from "playwright";
+import { firefox, type Cookie } from "playwright";
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
@@ -14,16 +14,16 @@ import { join } from "node:path";
 const COOKIE_DIR = join(homedir(), ".servicenow-mcp");
 const COOKIE_FILE = join(COOKIE_DIR, "cookies.json");
 
-// Cross-platform user agent
+// Cross-platform user agent for Firefox
 function getUserAgent(): string {
   const os = platform();
   if (os === "win32") {
-    return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+    return "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0";
   } else if (os === "darwin") {
-    return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+    return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0";
   } else {
     // Linux and others
-    return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+    return "Mozilla/5.0 (X11; Linux x86_64; rv:122.0) Gecko/20100101 Firefox/122.0";
   }
 }
 
@@ -44,9 +44,8 @@ export async function authenticateViaBrowser(
     `   A browser window will open. Please log in using your SSO credentials.\n`,
   );
 
-  const browser = await chromium.launch({
+  const browser = await firefox.launch({
     headless: false, // User needs to see and interact
-    args: ["--disable-blink-features=AutomationControlled"],
   });
 
   const context = await browser.newContext({
@@ -174,13 +173,14 @@ export function loadCookies(): {
     }
     const data = JSON.parse(readFileSync(COOKIE_FILE, "utf-8"));
 
-    // Check if cookies are expired (older than 45 minutes)
-    // ServiceNow sessions typically expire in ~1 hour, so we check earlier
+    // Check if cookies are expired (older than 4 hours)
+    // ServiceNow sessions can last 8+ hours depending on instance config
+    // We use 4 hours as a reasonable balance between session validity and refresh frequency
     const timestamp = new Date(data.timestamp);
     const ageMinutes = (Date.now() - timestamp.getTime()) / (1000 * 60);
-    if (ageMinutes > 45) {
+    if (ageMinutes > 240) {
       console.error(
-        "⚠️  Cookies are older than 45 minutes (ServiceNow sessions expire in ~1 hour). Please re-authenticate with auth_browser tool.",
+        "⚠️  Cookies are older than 4 hours. Please re-authenticate with auth_browser or auth_import_cookies tool.",
       );
       return null;
     }
@@ -198,6 +198,71 @@ export function loadCookies(): {
   } catch {
     return null;
   }
+}
+
+/**
+ * Import cookies from external source (e.g., Firefox DevTools network headers)
+ * This is useful when the user already has an authenticated session in the browser
+ */
+export function importCookies(
+  instanceUrl: string,
+  cookieString: string,
+  userToken?: string,
+): { success: boolean; error?: string } {
+  try {
+    ensureCookieDir();
+
+    // Parse cookie string into array of Cookie-like objects
+    const cookies = cookieString.split(";").map((pair) => {
+      const [name, ...valueParts] = pair.trim().split("=");
+      return {
+        name: name.trim(),
+        value: valueParts.join("=").trim(),
+        domain: new URL(instanceUrl).hostname,
+        path: "/",
+      };
+    });
+
+    const cookieData = {
+      instanceUrl: instanceUrl.replace(/\/$/, ""),
+      cookies: cookies,
+      userToken: userToken || "",
+      timestamp: new Date().toISOString(),
+      source: "imported", // Mark as imported for debugging
+    };
+
+    writeFileSync(COOKIE_FILE, JSON.stringify(cookieData, null, 2));
+
+    console.log(`\n✅ Cookies imported successfully!`);
+    console.log(`   Instance: ${instanceUrl}`);
+    console.log(`   Cookies saved to: ${COOKIE_FILE}`);
+    console.log(`   Cookie count: ${cookies.length}`);
+    if (userToken) {
+      console.log(`   User token: captured`);
+    }
+
+    return { success: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`\n❌ Cookie import failed: ${message}`);
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * Refresh existing session by re-authenticating with stored instance URL
+ */
+export async function refreshSession(): Promise<AuthResult> {
+  const existing = loadCookies();
+  if (!existing) {
+    return {
+      success: false,
+      instanceUrl: "",
+      cookies: [],
+      error: "No existing session to refresh. Use auth_browser first.",
+    };
+  }
+  return authenticateViaBrowser(existing.instanceUrl);
 }
 
 // CLI entry point

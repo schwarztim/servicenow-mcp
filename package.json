@@ -1,6 +1,6 @@
 {
   "name": "servicenow-mcp",
-  "version": "2.0.0",
+  "version": "2.2.0",
   "description": "MCP server for ServiceNow ITSM with browser-based SSO authentication",
   "type": "module",
   "main": "dist/index.js",
@@ -42,7 +42,7 @@
     "dev": "tsx src/index.ts",
     "auth": "tsx src/auth-browser.ts",
     "prepublishOnly": "npm run build",
-    "postinstall": "playwright install chromium"
+    "postinstall": "playwright install firefox"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
