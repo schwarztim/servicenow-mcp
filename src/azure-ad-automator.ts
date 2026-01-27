@@ -358,7 +358,7 @@ export class AzureADAutomator {
     const yesClicked = await this.trySelectorsWithTimeout(
       page,
       SELECTORS.staySignedIn,
-      15000, // Give it 15 seconds to appear
+      8000, // 8 seconds - fast detection
       "click",
     );
 

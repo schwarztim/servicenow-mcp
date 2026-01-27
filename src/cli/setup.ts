@@ -3,7 +3,9 @@
 import prompts from "prompts";
 import chalk from "chalk";
 import ora from "ora";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { CredentialStore } from "../credential-store.js";
 import { ConfigManager, DEFAULT_CONFIG } from "../auth-config.js";
 import { execFileNoThrow } from "../utils/execFileNoThrow.js";
@@ -236,7 +238,10 @@ async function main() {
       const page = await context.newPage();
 
       // Navigate to ServiceNow instance
-      await page.goto(instanceUrl, { waitUntil: "networkidle", timeout: 60000 });
+      await page.goto(instanceUrl, {
+        waitUntil: "networkidle",
+        timeout: 60000,
+      });
 
       // Perform Azure AD login
       const automator = new AzureADAutomator(logger);
@@ -247,12 +252,34 @@ async function main() {
         instanceUrl,
       );
 
+      if (result.success && result.cookies) {
+        // Save cookies to ~/.servicenow-mcp/cookies.json
+        const cookieDir = join(homedir(), ".servicenow-mcp");
+        const cookieFile = join(cookieDir, "cookies.json");
+
+        if (!existsSync(cookieDir)) {
+          mkdirSync(cookieDir, { recursive: true });
+        }
+
+        const cookieData = {
+          instanceUrl,
+          cookies: result.cookies,
+          timestamp: new Date().toISOString(),
+          source: "automated-setup",
+        };
+
+        writeFileSync(cookieFile, JSON.stringify(cookieData, null, 2));
+        logger.info(`Cookies saved to ${cookieFile}`);
+      }
+
       await browser.close();
 
       if (result.success) {
         testSpinner.succeed(chalk.green("Authentication test successful!"));
         console.log(
-          chalk.green("\n✅ Setup complete! Your configuration is working.\n"),
+          chalk.green(
+            `\n✅ Setup complete! Captured ${result.cookies?.length || 0} session cookies.\n`,
+          ),
         );
       } else {
         testSpinner.fail(chalk.red("Authentication test failed"));
