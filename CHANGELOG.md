@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.1] - 2026-01-27
+
+### Changed
+
+**MFA/TOTP is now optional**
+
+- Setup wizard allows skipping MFA script configuration (leave empty to skip)
+- If MFA field appears but no script configured, waits for manual entry (browser stays open)
+- Automated authentication works without MFA for environments that don't require it
+
+**Improved authentication behavior**
+
+- `auth_browser` tool now respects config's headless setting (defaults to background auth if configured)
+- Tool automatically loads credentials from keychain for automated authentication
+- Falls back to manual authentication only if automated auth fails or no credentials available
+
+**Silent background re-authentication**
+
+- When cookies expire (>8 hours), MCP attempts headless re-authentication automatically
+- Uses stored credentials from keychain (no interactive prompts)
+- Only falls back to interactive setup if background re-auth fails
+- Eliminates need for manual re-authentication in most cases
+
+### Fixed
+
+- Auto-setup now properly handles async operations
+- Background authentication works seamlessly when MCP starts
+
 ## [2.2.0] - 2026-01-27
 
 ### Added - Automated Authentication & Zero-Config Onboarding

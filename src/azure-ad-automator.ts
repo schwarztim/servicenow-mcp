@@ -292,6 +292,15 @@ export class AzureADAutomator {
       return true; // Not an error, MFA may not be required
     }
 
+    // If MFA field exists but no script configured, user must enter manually
+    if (!mfaScript || mfaScript.trim() === "") {
+      this.logger.warn(
+        "MFA field detected but no MFA script configured - manual entry required",
+      );
+      this.logger.warn("Waiting for manual MFA code entry...");
+      return true; // Return true to allow manual entry (browser stays open)
+    }
+
     this.logger.info("MFA field detected, generating code");
 
     // Generate MFA code securely via execFileNoThrow

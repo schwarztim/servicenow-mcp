@@ -131,14 +131,16 @@ async function main() {
     process.exit(1);
   }
 
-  // Step 5: Prompt for MFA script path
+  // Step 5: Prompt for MFA script path (optional)
   const { mfaScript } = await prompts({
     type: "text",
     name: "mfaScript",
-    message: "Path to MFA TOTP script:",
+    message: "Path to MFA TOTP script (leave empty to skip):",
     initial: DEFAULT_CONFIG.mfaScript,
     validate: (value) => {
-      if (!value) return "MFA script path is required";
+      // Allow empty (skip MFA)
+      if (!value) return true;
+      // If provided, must exist
       if (!existsSync(value)) {
         return `File not found: ${value}`;
       }
@@ -146,52 +148,55 @@ async function main() {
     },
   });
 
-  if (!mfaScript) {
+  // Step 6: Test MFA script execution (only if provided)
+  if (mfaScript) {
+    const mfaTestSpinner = ora("Testing MFA script execution").start();
+    try {
+      const result = await execFileNoThrow(mfaScript, [], { timeout: 10000 });
+
+      if (result.exitCode !== 0) {
+        mfaTestSpinner.fail(chalk.red("MFA script execution failed"));
+        console.error(
+          chalk.red(`Error: ${result.stderr || "Unknown error"}\n`),
+        );
+        console.log(
+          chalk.yellow(
+            "Please ensure your MFA script is executable and outputs a 6-digit TOTP code.\n",
+          ),
+        );
+        process.exit(1);
+      }
+
+      const mfaCode = result.stdout.trim();
+      if (!/^\d{6}$/.test(mfaCode)) {
+        mfaTestSpinner.fail(chalk.red("Invalid MFA code format"));
+        console.error(
+          chalk.red(
+            `Expected 6-digit code, got: ${mfaCode.length > 0 ? mfaCode : "(empty)"}\n`,
+          ),
+        );
+        console.log(
+          chalk.yellow(
+            "Your MFA script must output exactly a 6-digit TOTP code (e.g., 123456).\n",
+          ),
+        );
+        process.exit(1);
+      }
+
+      mfaTestSpinner.succeed(
+        chalk.green(`MFA script working correctly (generated: ${mfaCode})`),
+      );
+    } catch (error: any) {
+      mfaTestSpinner.fail(chalk.red("Failed to test MFA script"));
+      console.error(chalk.red(`Error: ${error.message}\n`));
+      process.exit(1);
+    }
+  } else {
     console.log(
-      chalk.red("\n❌ Setup cancelled. MFA script path is required.\n"),
+      chalk.yellow(
+        "⚠️  Skipping MFA configuration (manual entry will be required during authentication)\n",
+      ),
     );
-    process.exit(1);
-  }
-
-  // Step 6: Test MFA script execution
-  const mfaTestSpinner = ora("Testing MFA script execution").start();
-  try {
-    const result = await execFileNoThrow(mfaScript, [], { timeout: 10000 });
-
-    if (result.exitCode !== 0) {
-      mfaTestSpinner.fail(chalk.red("MFA script execution failed"));
-      console.error(chalk.red(`Error: ${result.stderr || "Unknown error"}\n`));
-      console.log(
-        chalk.yellow(
-          "Please ensure your MFA script is executable and outputs a 6-digit TOTP code.\n",
-        ),
-      );
-      process.exit(1);
-    }
-
-    const mfaCode = result.stdout.trim();
-    if (!/^\d{6}$/.test(mfaCode)) {
-      mfaTestSpinner.fail(chalk.red("Invalid MFA code format"));
-      console.error(
-        chalk.red(
-          `Expected 6-digit code, got: ${mfaCode.length > 0 ? mfaCode : "(empty)"}\n`,
-        ),
-      );
-      console.log(
-        chalk.yellow(
-          "Your MFA script must output exactly a 6-digit TOTP code (e.g., 123456).\n",
-        ),
-      );
-      process.exit(1);
-    }
-
-    mfaTestSpinner.succeed(
-      chalk.green(`MFA script working correctly (generated: ${mfaCode})`),
-    );
-  } catch (error: any) {
-    mfaTestSpinner.fail(chalk.red("Failed to test MFA script"));
-    console.error(chalk.red(`Error: ${error.message}\n`));
-    process.exit(1);
   }
 
   // Step 7: Save configuration

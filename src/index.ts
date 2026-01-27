@@ -31,6 +31,8 @@ import {
 } from "./auth-browser.js";
 import { BrowserAuthManager } from "./browser-auth.js";
 import { autoSetup } from "./auto-setup.js";
+import { ConfigManager } from "./auth-config.js";
+import { CredentialStore } from "./credential-store.js";
 
 // Configuration from environment
 const INSTANCE_URL = process.env.SERVICENOW_INSTANCE_URL || "";
@@ -2948,7 +2950,28 @@ class ServiceNowMcpServer {
           (args.instance_url as string) ||
           INSTANCE_URL ||
           "https://instance.service-now.com";
-        const result = await authenticateViaBrowser(instanceUrl);
+
+        // Load config to get headless preference and credentials
+        const configManager = new ConfigManager();
+        const config = configManager.load();
+        const credentialStore = new CredentialStore();
+
+        // Attempt automated authentication if credentials available
+        let authOptions: any = {};
+        if (config) {
+          authOptions.headless = config.headless; // Respect config's headless setting
+          authOptions.config = config;
+
+          // Try to load credentials from keychain
+          const password = await credentialStore.getPassword(config.email);
+          if (password) {
+            authOptions.email = config.email;
+            authOptions.password = password;
+            authOptions.mfaScript = config.mfaScript || "";
+          }
+        }
+
+        const result = await authenticateViaBrowser(instanceUrl, authOptions);
         if (result.success) {
           // Hot-reload credentials without requiring restart
           const reloaded = this.client.reloadCredentials();
@@ -3869,10 +3892,18 @@ class ServiceNowMcpServer {
 }
 
 // Auto-setup check: ensure configuration exists before starting server
-if (!autoSetup()) {
-  console.error("❌ ServiceNow MCP cannot start without valid configuration");
-  process.exit(1);
+async function main() {
+  const setupSuccess = await autoSetup();
+  if (!setupSuccess) {
+    console.error("❌ ServiceNow MCP cannot start without valid configuration");
+    process.exit(1);
+  }
+
+  const server = new ServiceNowMcpServer();
+  await server.run();
 }
 
-const server = new ServiceNowMcpServer();
-server.run().catch(console.error);
+main().catch((error) => {
+  console.error("❌ ServiceNow MCP server error:", error);
+  process.exit(1);
+});

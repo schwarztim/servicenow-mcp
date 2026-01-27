@@ -1,12 +1,16 @@
 /**
  * Auto-setup detection and execution
  * Checks if ServiceNow MCP needs initial configuration and runs setup wizard if needed
+ * For expired cookies, attempts silent background re-authentication first
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { CredentialStore } from "./credential-store.js";
+import { ConfigManager } from "./auth-config.js";
+import { authenticateViaBrowser } from "./auth-browser.js";
 
 const CONFIG_DIR = join(homedir(), ".servicenow-mcp");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
@@ -82,6 +86,54 @@ export function checkSetupNeeded(): SetupStatus {
 }
 
 /**
+ * Attempt background re-authentication using stored credentials
+ * Returns true if successful, false otherwise
+ */
+async function runBackgroundAuth(): Promise<boolean> {
+  console.error("\n🔄 Attempting background re-authentication...\n");
+
+  try {
+    // Load existing configuration
+    const configManager = new ConfigManager();
+    const config = configManager.load();
+    if (!config) {
+      console.error("❌ No configuration found");
+      return false;
+    }
+
+    // Load password from keychain
+    const credentialStore = new CredentialStore();
+    const password = await credentialStore.getPassword(config.email);
+    if (!password) {
+      console.error("❌ No password found in keychain");
+      return false;
+    }
+
+    // Attempt headless authentication
+    const result = await authenticateViaBrowser(config.instanceUrl, {
+      email: config.email,
+      password: password,
+      mfaScript: config.mfaScript || "",
+      headless: true, // Always headless for background re-auth
+      config: config,
+    });
+
+    if (result.success) {
+      console.error("✅ Background re-authentication successful\n");
+      return true;
+    } else {
+      console.error(
+        `❌ Background re-authentication failed: ${result.error}\n`,
+      );
+      return false;
+    }
+  } catch (error: any) {
+    console.error(`❌ Background re-authentication error: ${error.message}\n`);
+    return false;
+  }
+}
+
+/**
  * Run setup wizard (blocking)
  * This spawns the setup CLI as a child process
  */
@@ -99,8 +151,9 @@ export function runSetupWizard(): boolean {
 /**
  * Auto-setup: Check if setup is needed and run it if necessary
  * Returns true if ready to proceed, false if setup failed
+ * For expired cookies, attempts background re-auth first before falling back to wizard
  */
-export function autoSetup(): boolean {
+export async function autoSetup(): Promise<boolean> {
   const status = checkSetupNeeded();
 
   if (!status.needsSetup) {
@@ -109,6 +162,19 @@ export function autoSetup(): boolean {
 
   console.error(`⚠️  ${status.reason}`);
 
+  // If cookies expired but config exists, try background re-auth first
+  if (status.cookiesExpired && status.hasConfig) {
+    console.error("🔄 Attempting automatic re-authentication...");
+    const bgAuthSuccess = await runBackgroundAuth();
+    if (bgAuthSuccess) {
+      return true; // Background re-auth succeeded
+    }
+    console.error(
+      "⚠️  Background re-authentication failed, falling back to interactive setup",
+    );
+  }
+
+  // Fall back to interactive wizard for initial setup or if background auth failed
   const success = runSetupWizard();
 
   if (!success) {
