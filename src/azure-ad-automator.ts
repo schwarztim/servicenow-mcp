@@ -414,20 +414,52 @@ export class AzureADAutomator {
   }
 
   /**
-   * Check if a URL is a ServiceNow instance URL
+   * Check if a URL is a ServiceNow instance URL (and not a login page)
    */
   private isServiceNowUrl(url: string): boolean {
     try {
       const urlObj = new URL(url);
 
+      // Check if we're past login pages
+      const isLoginPage =
+        url.includes("/login") ||
+        url.includes("/saml") ||
+        url.includes("/sso") ||
+        url.includes("idp") ||
+        url.includes("okta") ||
+        url.includes("auth0") ||
+        url.includes("login.microsoftonline");
+
+      if (isLoginPage) {
+        return false; // Still on a login page, not ServiceNow yet
+      }
+
       // If we have a specific instanceUrl, check if it matches
       if (this.instanceUrl) {
         const instanceHostname = new URL(this.instanceUrl).hostname;
-        return urlObj.hostname === instanceHostname;
+        const onCorrectInstance = urlObj.hostname === instanceHostname;
+
+        // Check for ServiceNow-specific URL patterns
+        const hasServiceNowPath =
+          url.includes("/nav/") ||
+          url.includes("/now/") ||
+          url.includes("/$") ||
+          url.includes("/welcome") ||
+          url.includes("/home");
+
+        return onCorrectInstance && hasServiceNowPath;
       }
 
-      // Fallback: any service-now.com domain
-      return urlObj.hostname.includes("service-now.com");
+      // Fallback: any service-now.com domain with ServiceNow patterns
+      const isServiceNowDomain = urlObj.hostname.includes("service-now.com");
+      const hasServiceNowPath =
+        url.includes("/nav/") ||
+        url.includes("/now/") ||
+        url.includes("/$") ||
+        url.includes("/welcome") ||
+        url.includes("/home");
+
+      return isServiceNowDomain && hasServiceNowPath;
     } catch {
       return false;
     }

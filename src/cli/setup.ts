@@ -236,7 +236,7 @@ async function main() {
       const page = await context.newPage();
 
       // Navigate to ServiceNow instance
-      await page.goto(instanceUrl, { timeout: 30000 });
+      await page.goto(instanceUrl, { waitUntil: "networkidle", timeout: 60000 });
 
       // Perform Azure AD login
       const automator = new AzureADAutomator(logger);
