@@ -63,6 +63,7 @@ export interface LoginResult {
 
 export class AzureADAutomator {
   private logger: Logger;
+  private instanceUrl: string | null = null;
 
   constructor(logger: Logger) {
     this.logger = logger;
@@ -75,7 +76,9 @@ export class AzureADAutomator {
     page: Page,
     credentials: LoginCredentials,
     timeout: number = 90000,
+    instanceUrl?: string,
   ): Promise<LoginResult> {
+    this.instanceUrl = instanceUrl || null;
     try {
       this.logger.info("Starting Azure AD login automation");
 
@@ -388,13 +391,44 @@ export class AzureADAutomator {
     this.logger.info("Waiting for ServiceNow redirect");
 
     try {
-      await page.waitForURL((url) => url.hostname.includes("service-now.com"), {
-        timeout,
-      });
+      // Check if we're already on ServiceNow (in case manual auth was fast)
+      const currentUrl = page.url();
+      if (this.isServiceNowUrl(currentUrl)) {
+        this.logger.info(`Already on ServiceNow: ${currentUrl}`);
+        return true;
+      }
+
+      // Wait for redirect to ServiceNow
+      await page.waitForURL(
+        (url) => this.isServiceNowUrl(url.toString()),
+        { timeout },
+      );
       this.logger.info(`Redirected to ServiceNow: ${page.url()}`);
       return true;
     } catch (error) {
-      this.logger.error("Timeout waiting for ServiceNow redirect");
+      this.logger.error(
+        `Timeout waiting for ServiceNow redirect. Current URL: ${page.url()}`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Check if a URL is a ServiceNow instance URL
+   */
+  private isServiceNowUrl(url: string): boolean {
+    try {
+      const urlObj = new URL(url);
+
+      // If we have a specific instanceUrl, check if it matches
+      if (this.instanceUrl) {
+        const instanceHostname = new URL(this.instanceUrl).hostname;
+        return urlObj.hostname === instanceHostname;
+      }
+
+      // Fallback: any service-now.com domain
+      return urlObj.hostname.includes("service-now.com");
+    } catch {
       return false;
     }
   }

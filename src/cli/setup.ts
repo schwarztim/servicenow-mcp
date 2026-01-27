@@ -244,6 +244,7 @@ async function main() {
         page,
         { email, password, mfaScript },
         90000,
+        instanceUrl,
       );
 
       await browser.close();

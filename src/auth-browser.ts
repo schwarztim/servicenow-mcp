@@ -121,6 +121,7 @@ export async function authenticateViaBrowser(
           mfaScript: options.mfaScript || "",
         },
         90000,
+        instanceUrl,
       );
 
       if (!automationResult.success) {
