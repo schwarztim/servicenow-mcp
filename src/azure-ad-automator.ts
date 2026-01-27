@@ -353,32 +353,60 @@ export class AzureADAutomator {
   ): Promise<boolean> {
     this.logger.info("Checking for 'Stay signed in?' prompt");
 
-    const promptExists = await this.trySelectors(
+    // Try to click the Yes button directly with a reasonable timeout
+    // If it's not there, that's fine - the prompt may not appear
+    const yesClicked = await this.trySelectorsWithTimeout(
       page,
       SELECTORS.staySignedIn,
-      Math.min(timeout, 5000), // Don't wait too long if prompt doesn't appear
+      15000, // Give it 15 seconds to appear
+      "click",
     );
 
-    if (!promptExists) {
+    if (!yesClicked) {
       this.logger.info("No 'Stay signed in?' prompt detected");
       return true; // Not an error, prompt may not appear
     }
 
-    this.logger.info("'Stay signed in?' prompt detected, clicking Yes");
-
-    const yesClicked = await this.trySelectors(
-      page,
-      SELECTORS.staySignedIn,
-      timeout,
-      "click",
-    );
-    if (!yesClicked) {
-      this.logger.warn("Failed to click Yes on 'Stay signed in?' prompt");
-      return false;
-    }
-
     this.logger.info("'Stay signed in?' Yes button clicked");
     return true;
+  }
+
+  /**
+   * Try selectors with a custom per-selector timeout (not capped at 5s)
+   */
+  private async trySelectorsWithTimeout(
+    page: Page,
+    selectors: readonly string[],
+    timeoutPerSelector: number,
+    action?: "click" | "fill",
+    fillValue?: string,
+  ): Promise<boolean> {
+    for (const selector of selectors) {
+      try {
+        this.logger.debug(`Trying selector: ${selector}`);
+        const element = await page.waitForSelector(selector, {
+          timeout: timeoutPerSelector,
+          state: "visible",
+        });
+
+        if (element) {
+          if (action === "click") {
+            await element.click();
+            this.logger.debug(`Clicked element: ${selector}`);
+          } else if (action === "fill" && fillValue !== undefined) {
+            await element.fill(fillValue);
+            this.logger.debug(`Filled element: ${selector}`);
+          }
+          return true;
+        }
+      } catch (error) {
+        // Selector failed, try next one
+        this.logger.debug(`Selector failed: ${selector}`);
+        continue;
+      }
+    }
+
+    return false;
   }
 
   /**
@@ -399,10 +427,9 @@ export class AzureADAutomator {
       }
 
       // Wait for redirect to ServiceNow
-      await page.waitForURL(
-        (url) => this.isServiceNowUrl(url.toString()),
-        { timeout },
-      );
+      await page.waitForURL((url) => this.isServiceNowUrl(url.toString()), {
+        timeout,
+      });
       this.logger.info(`Redirected to ServiceNow: ${page.url()}`);
       return true;
     } catch (error) {
