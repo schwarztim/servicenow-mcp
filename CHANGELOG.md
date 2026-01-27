@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-01-26
+
+### Changed - Firefox Migration
+
+**Browser Authentication**:
+
+- Migrated from Chromium to Firefox for browser-based SSO authentication
+- Updated Playwright to use `firefox` instead of `chromium`
+- Updated user agent strings to Firefox 122.0
+- Updated postinstall script to install Firefox browser
+
+### Why Firefox?
+
+- Better integration with firefox-devtools-mcp ecosystem
+- More consistent browser automation experience
+- Improved compatibility with enterprise SSO systems
+- Firefox DevTools provide better debugging capabilities
+
+### Breaking Changes
+
+None - all existing functionality remains backward compatible. Only the underlying browser engine changed from Chromium to Firefox.
+
 ## [2.0.0] - 2026-01-26
 
 ### Added - COMPLETE ServiceNow Request Type Coverage

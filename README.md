@@ -268,7 +268,7 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for de
 ## Acknowledgments
 
 - Built with [@modelcontextprotocol/sdk](https://github.com/modelcontextprotocol/sdk)
-- Browser automation powered by [Playwright](https://playwright.dev/)
+- Browser automation powered by [Playwright](https://playwright.dev/) with Firefox
 
 ## License
 
