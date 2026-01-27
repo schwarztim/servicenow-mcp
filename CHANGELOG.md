@@ -5,6 +5,85 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-01-27
+
+### Added - Automated Authentication & Zero-Config Onboarding
+
+**🎉 Major Feature: Fully Automated Azure AD Authentication**
+
+Employees can now onboard in 2-3 minutes with authentication happening completely in the background.
+
+**What's New:**
+
+1. **Headless Authentication** (Background by Default)
+   - Automatic email/password entry
+   - Automatic "Stay signed in?" button click
+   - Automatic session capture (31 cookies)
+   - Zero browser visibility during normal operation
+
+2. **Auto-Setup on First Run**
+   - Detects missing/expired configuration automatically
+   - Runs setup wizard on first MCP startup
+   - No manual configuration needed
+   - Employees just add MCP to Claude Desktop → setup runs automatically
+
+3. **Intelligent Fallback**
+   - If background auth fails → browser opens automatically
+   - User completes login manually once
+   - Session captured → works automatically from then on
+
+4. **Self-Healing Authentication**
+   - Detects expired cookies (>8 hours old)
+   - Automatically re-authenticates in background
+   - Falls back to visible browser if needed
+
+5. **Interactive Setup Wizard** (`npm run setup`)
+   - User-friendly prompts for credentials
+   - Validates ServiceNow instance URL
+   - Tests MFA script execution
+   - Stores passwords securely in system keychain
+   - Tests authentication before saving
+
+6. **Health Check System** (`npm run health-check`)
+   - Configuration validation
+   - Credential availability check
+   - MFA script testing
+   - Network connectivity test
+   - Cookie age validation
+   - Actionable recommendations
+
+**New Files:**
+
+- `src/azure-ad-automator.ts` - Core automation logic (401 lines)
+- `src/cli/setup.ts` - Interactive setup wizard (400+ lines)
+- `src/cli/health-check.ts` - Health check CLI
+- `src/health-check.ts` - Health check logic (448 lines)
+- `src/logger.ts` - Winston logging with sensitive data sanitization
+- `src/auth-config.ts` - Configuration management
+- `src/credential-store.ts` - System keychain integration
+- `src/auto-setup.ts` - Auto-setup detection
+- `SETUP.md` - Employee onboarding documentation
+
+**Dependencies Added:**
+
+- `keytar@^7.9.0` - System keychain (macOS/Windows/Linux)
+- `chalk@^5.3.0` - Terminal colors
+- `ora@^8.0.1` - Loading spinners
+- `prompts@^2.4.2` - Interactive prompts
+- `winston@^3.11.0` - Structured logging
+
+**Security:**
+
+- Passwords stored in OS keychain only (never in files)
+- Cookies expire after 8 hours
+- Automatic sensitive data sanitization in logs
+- All authentication via Azure AD SSO
+
+**Documentation:**
+
+- See `SETUP.md` for employee onboarding guide
+- See `IMPLEMENTATION-SUMMARY.md` for technical details
+
 ## [2.1.0] - 2026-01-26
 
 ### Changed - Firefox Migration
