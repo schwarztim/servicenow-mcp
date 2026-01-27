@@ -468,7 +468,7 @@ export class AzureADAutomator {
 
         // Check for ServiceNow-specific URL patterns
         const hasServiceNowPath =
-          url.includes("/nav/") ||
+          url.includes("/nav") ||
           url.includes("/now/") ||
           url.includes("/$") ||
           url.includes("/welcome") ||
@@ -480,7 +480,7 @@ export class AzureADAutomator {
       // Fallback: any service-now.com domain with ServiceNow patterns
       const isServiceNowDomain = urlObj.hostname.includes("service-now.com");
       const hasServiceNowPath =
-        url.includes("/nav/") ||
+        url.includes("/nav") ||
         url.includes("/now/") ||
         url.includes("/$") ||
         url.includes("/welcome") ||
