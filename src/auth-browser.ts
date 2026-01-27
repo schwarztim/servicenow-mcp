@@ -12,7 +12,8 @@ import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { AzureADAutomator } from "./azure-ad-automator.js";
 import { Logger } from "./logger.js";
-import type { AuthConfig } from "./auth-config.js";
+import { ConfigManager, type AuthConfig } from "./auth-config.js";
+import { CredentialStore } from "./credential-store.js";
 
 const COOKIE_DIR = join(homedir(), ".servicenow-mcp");
 const COOKIE_FILE = join(COOKIE_DIR, "cookies.json");
@@ -74,12 +75,39 @@ export async function authenticateViaBrowser(
     config?: AuthConfig;
   },
 ): Promise<AuthResult> {
-  // Determine if we should attempt automated login
-  const isAutomated =
-    options?.headless === true && options?.email && options?.password;
   const logger = new Logger("INFO");
 
-  if (isAutomated) {
+  // ALWAYS try to load config and credentials if not provided
+  if (!options?.email || !options?.password) {
+    logger.info("📋 No credentials provided, checking config...");
+    const configManager = new ConfigManager();
+    const config = configManager.load();
+    if (config) {
+      const credentialStore = new CredentialStore();
+      const password = await credentialStore.getPassword(config.email);
+      if (password) {
+        options = {
+          ...options,
+          email: config.email,
+          password: password,
+          mfaScript: options?.mfaScript || config.mfaScript || "",
+          headless: options?.headless ?? config.headless ?? true, // Default to headless
+          config: config,
+        };
+        logger.info("✅ Loaded credentials from config and keychain");
+      } else {
+        logger.warn("⚠️  Config found but password not in keychain");
+      }
+    } else {
+      logger.warn("⚠️  No config found");
+    }
+  }
+
+  // Determine if we should attempt automated login
+  const isAutomated =
+    options?.headless !== false && options?.email && options?.password;
+
+  if (isAutomated && options) {
     logger.info("🤖 ServiceNow Automated Authentication");
     logger.info(`   Instance: ${instanceUrl}`);
     logger.info(`   Email: ${options.email}`);
@@ -93,7 +121,7 @@ export async function authenticateViaBrowser(
   }
 
   const browser = await firefox.launch({
-    headless: options?.headless ?? false, // Default to visible browser for manual flow
+    headless: options?.headless ?? true, // Default to headless (background)
   });
 
   const context = await browser.newContext({

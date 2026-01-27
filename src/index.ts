@@ -2959,16 +2959,29 @@ class ServiceNowMcpServer {
         // Attempt automated authentication if credentials available
         let authOptions: any = {};
         if (config) {
+          console.error(
+            `[auth_browser] Config loaded: headless=${config.headless}, email=${config.email}`,
+          );
           authOptions.headless = config.headless; // Respect config's headless setting
           authOptions.config = config;
 
           // Try to load credentials from keychain
           const password = await credentialStore.getPassword(config.email);
+          console.error(
+            `[auth_browser] Password from keychain: ${password ? "✅ loaded" : "❌ not found"}`,
+          );
           if (password) {
             authOptions.email = config.email;
             authOptions.password = password;
             authOptions.mfaScript = config.mfaScript || "";
+            console.error(
+              `[auth_browser] Auth options prepared: headless=${authOptions.headless}, email=${authOptions.email}, hasPassword=${!!authOptions.password}`,
+            );
           }
+        } else {
+          console.error(
+            "[auth_browser] No config found - using manual authentication",
+          );
         }
 
         const result = await authenticateViaBrowser(instanceUrl, authOptions);
