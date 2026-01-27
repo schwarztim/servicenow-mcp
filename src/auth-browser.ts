@@ -10,6 +10,9 @@ import { firefox, type Cookie } from "playwright";
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
+import { AzureADAutomator } from "./azure-ad-automator.js";
+import { Logger } from "./logger.js";
+import type { AuthConfig } from "./auth-config.js";
 
 const COOKIE_DIR = join(homedir(), ".servicenow-mcp");
 const COOKIE_FILE = join(COOKIE_DIR, "cookies.json");
@@ -35,17 +38,62 @@ export interface AuthResult {
   error?: string;
 }
 
+/**
+ * Helper function to detect if we've successfully authenticated to ServiceNow
+ */
+async function isOnServiceNowPage(page: any): Promise<boolean> {
+  const currentUrl = page.url();
+
+  // Check if we're past the login page
+  const isLoginPage =
+    currentUrl.includes("/login") ||
+    currentUrl.includes("/saml") ||
+    currentUrl.includes("/sso") ||
+    currentUrl.includes("idp") ||
+    currentUrl.includes("okta") ||
+    currentUrl.includes("auth0") ||
+    currentUrl.includes("login.microsoftonline");
+
+  const isServiceNowPage =
+    currentUrl.includes("service-now.com") &&
+    (currentUrl.includes("/nav/") ||
+      currentUrl.includes("/now/") ||
+      currentUrl.includes("/$") ||
+      currentUrl.includes("/welcome"));
+
+  return !isLoginPage && isServiceNowPage;
+}
+
 export async function authenticateViaBrowser(
   instanceUrl: string,
+  options?: {
+    email?: string;
+    password?: string;
+    mfaScript?: string;
+    headless?: boolean;
+    config?: AuthConfig;
+  },
 ): Promise<AuthResult> {
-  console.log(`\n🔐 ServiceNow Browser Authentication`);
-  console.log(`   Instance: ${instanceUrl}`);
-  console.log(
-    `   A browser window will open. Please log in using your SSO credentials.\n`,
-  );
+  // Determine if we should attempt automated login
+  const isAutomated =
+    options?.headless === true && options?.email && options?.password;
+  const logger = new Logger("INFO");
+
+  if (isAutomated) {
+    logger.info("🤖 ServiceNow Automated Authentication");
+    logger.info(`   Instance: ${instanceUrl}`);
+    logger.info(`   Email: ${options.email}`);
+    logger.info(`   Mode: Headless with automated Azure AD login`);
+  } else {
+    logger.info("🔐 ServiceNow Browser Authentication");
+    logger.info(`   Instance: ${instanceUrl}`);
+    logger.info(
+      "   A browser window will open. Please log in using your SSO credentials.",
+    );
+  }
 
   const browser = await firefox.launch({
-    headless: false, // User needs to see and interact
+    headless: options?.headless ?? false, // Default to visible browser for manual flow
   });
 
   const context = await browser.newContext({
@@ -59,49 +107,63 @@ export async function authenticateViaBrowser(
     // Navigate to ServiceNow
     await page.goto(instanceUrl, { waitUntil: "networkidle" });
 
-    console.log("⏳ Waiting for you to complete SSO login...");
-    console.log(
-      "   (The browser will close automatically once authenticated)\n",
-    );
+    // Automated login flow
+    if (isAutomated && options?.email && options?.password) {
+      logger.info("🔄 Attempting automated Azure AD login...");
 
-    // Wait for successful authentication by detecting:
-    // 1. URL no longer contains login/saml/sso keywords
-    // 2. We're on a ServiceNow page (contains nav or workspace)
-    let authenticated = false;
-    let attempts = 0;
-    const maxAttempts = 300; // 5 minutes - allows time for MFA flows
+      const automator = new AzureADAutomator(logger);
 
-    while (!authenticated && attempts < maxAttempts) {
-      await page.waitForTimeout(1000);
-      const currentUrl = page.url();
+      const automationResult = await automator.performLogin(
+        page,
+        {
+          email: options.email,
+          password: options.password,
+          mfaScript: options.mfaScript || "",
+        },
+        90000,
+      );
 
-      // Check if we're past the login page
-      const isLoginPage =
-        currentUrl.includes("/login") ||
-        currentUrl.includes("/saml") ||
-        currentUrl.includes("/sso") ||
-        currentUrl.includes("idp") ||
-        currentUrl.includes("okta") ||
-        currentUrl.includes("auth0") ||
-        currentUrl.includes("login.microsoftonline");
+      if (!automationResult.success) {
+        logger.error(`Automated login failed: ${automationResult.error}`);
+        logger.info("💡 Falling back to manual authentication...");
 
-      const isServiceNowPage =
-        currentUrl.includes("service-now.com") &&
-        (currentUrl.includes("/nav/") ||
-          currentUrl.includes("/now/") ||
-          currentUrl.includes("/$") ||
-          currentUrl.includes("/welcome"));
-
-      if (!isLoginPage && isServiceNowPage) {
-        authenticated = true;
-        console.log("✅ Authentication detected!");
+        // Don't throw - fall through to manual flow
+        // The browser is already open, just wait for manual intervention
+      } else {
+        logger.info("✅ Automated login successful!");
       }
-
-      attempts++;
     }
 
-    if (!authenticated) {
-      throw new Error("Authentication timeout. Please try again.");
+    // Manual authentication flow (or fallback from failed automation)
+    if (!isAutomated || !(await isOnServiceNowPage(page))) {
+      if (!isAutomated) {
+        logger.info("⏳ Waiting for you to complete SSO login...");
+        logger.info(
+          "   (The browser will close automatically once authenticated)",
+        );
+      }
+
+      // Wait for successful authentication by detecting:
+      // 1. URL no longer contains login/saml/sso keywords
+      // 2. We're on a ServiceNow page (contains nav or workspace)
+      let authenticated = false;
+      let attempts = 0;
+      const maxAttempts = 300; // 5 minutes - allows time for MFA flows
+
+      while (!authenticated && attempts < maxAttempts) {
+        await page.waitForTimeout(1000);
+
+        if (await isOnServiceNowPage(page)) {
+          authenticated = true;
+          logger.info("✅ Authentication detected!");
+        }
+
+        attempts++;
+      }
+
+      if (!authenticated) {
+        throw new Error("Authentication timeout. Please try again.");
+      }
     }
 
     // Get all cookies from the session
@@ -128,11 +190,11 @@ export async function authenticateViaBrowser(
     };
     writeFileSync(COOKIE_FILE, JSON.stringify(cookieData, null, 2));
 
-    console.log(`\n✅ Authentication successful!`);
-    console.log(`   Cookies saved to: ${COOKIE_FILE}`);
-    console.log(`   Found ${cookies.length} cookies`);
+    logger.info("✅ Authentication successful!");
+    logger.info(`   Cookies saved to: ${COOKIE_FILE}`);
+    logger.info(`   Found ${cookies.length} cookies`);
     if (userToken) {
-      console.log(`   User token captured`);
+      logger.info(`   User token captured`);
     }
 
     await browser.close();
@@ -146,7 +208,7 @@ export async function authenticateViaBrowser(
   } catch (error) {
     await browser.close();
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`\n❌ Authentication failed: ${message}`);
+    logger.error(`❌ Authentication failed: ${message}`);
     return {
       success: false,
       instanceUrl,
