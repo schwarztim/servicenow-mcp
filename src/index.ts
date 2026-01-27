@@ -30,6 +30,7 @@ import {
   refreshSession,
 } from "./auth-browser.js";
 import { BrowserAuthManager } from "./browser-auth.js";
+import { autoSetup } from "./auto-setup.js";
 
 // Configuration from environment
 const INSTANCE_URL = process.env.SERVICENOW_INSTANCE_URL || "";
@@ -3865,6 +3866,12 @@ class ServiceNowMcpServer {
     await this.server.connect(transport);
     console.error("ServiceNow MCP server running on stdio");
   }
+}
+
+// Auto-setup check: ensure configuration exists before starting server
+if (!autoSetup()) {
+  console.error("❌ ServiceNow MCP cannot start without valid configuration");
+  process.exit(1);
 }
 
 const server = new ServiceNowMcpServer();

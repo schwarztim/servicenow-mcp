@@ -41,17 +41,25 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "auth": "tsx src/auth-browser.ts",
+    "setup": "tsx src/cli/setup.ts",
+    "test-auth": "tsx src/cli/health-check.ts",
     "prepublishOnly": "npm run build",
     "postinstall": "playwright install firefox"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "chalk": "^5.6.2",
+    "keytar": "^7.9.0",
+    "ora": "^8.2.0",
     "playwright": "^1.50.0",
+    "prompts": "^2.4.2",
+    "winston": "^3.19.0",
     "zod": "^3.22.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.3.0",
-    "tsx": "^4.7.0"
+    "@types/prompts": "^2.4.9",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
   }
 }
