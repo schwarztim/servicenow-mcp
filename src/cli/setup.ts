@@ -230,8 +230,11 @@ async function main() {
 
     try {
       const logger = new Logger("INFO");
+
+      // Try headless first (background authentication)
+      console.log(chalk.dim("  Attempting background authentication...\n"));
       const browser = await firefox.launch({
-        headless: false, // Show browser for first test
+        headless: true, // Background by default
       });
 
       const context = await browser.newContext();
@@ -275,28 +278,102 @@ async function main() {
       await browser.close();
 
       if (result.success) {
-        testSpinner.succeed(chalk.green("Authentication test successful!"));
+        testSpinner.succeed(
+          chalk.green("Background authentication successful!"),
+        );
         console.log(
           chalk.green(
             `\n✅ Setup complete! Captured ${result.cookies?.length || 0} session cookies.\n`,
           ),
         );
       } else {
-        testSpinner.fail(chalk.red("Authentication test failed"));
-        console.error(chalk.red(`Error: ${result.error}\n`));
-        console.log(
+        // Headless failed, try with visible browser for manual intervention
+        testSpinner.warn(
           chalk.yellow(
-            "Configuration saved, but authentication failed. Please check your credentials and try again.\n",
+            "Background authentication failed. Opening browser for manual login...",
           ),
         );
-        process.exit(1);
+        console.log(
+          chalk.dim(
+            `  ${result.error}\n  Please complete the login manually in the browser window.\n`,
+          ),
+        );
+
+        try {
+          const visibleBrowser = await firefox.launch({
+            headless: false,
+          });
+
+          const visibleContext = await visibleBrowser.newContext();
+          const visiblePage = await visibleContext.newPage();
+
+          await visiblePage.goto(instanceUrl, {
+            waitUntil: "networkidle",
+            timeout: 60000,
+          });
+
+          const visibleAutomator = new AzureADAutomator(logger);
+          const visibleResult = await visibleAutomator.performLogin(
+            visiblePage,
+            { email, password, mfaScript },
+            90000,
+            instanceUrl,
+          );
+
+          if (visibleResult.success && visibleResult.cookies) {
+            // Save cookies
+            const cookieDir = join(homedir(), ".servicenow-mcp");
+            const cookieFile = join(cookieDir, "cookies.json");
+
+            if (!existsSync(cookieDir)) {
+              mkdirSync(cookieDir, { recursive: true });
+            }
+
+            const cookieData = {
+              instanceUrl,
+              cookies: visibleResult.cookies,
+              timestamp: new Date().toISOString(),
+              source: "automated-setup-visible",
+            };
+
+            writeFileSync(cookieFile, JSON.stringify(cookieData, null, 2));
+            logger.info(`Cookies saved to ${cookieFile}`);
+          }
+
+          await visibleBrowser.close();
+
+          if (visibleResult.success) {
+            console.log(
+              chalk.green(
+                `\n✅ Setup complete! Captured ${visibleResult.cookies?.length || 0} session cookies.\n`,
+              ),
+            );
+          } else {
+            console.error(
+              chalk.red(`\n❌ Authentication failed: ${visibleResult.error}\n`),
+            );
+            process.exit(1);
+          }
+        } catch (fallbackError: any) {
+          console.error(
+            chalk.red(
+              `\n❌ Manual authentication failed: ${fallbackError.message}\n`,
+            ),
+          );
+          console.log(
+            chalk.yellow(
+              "Configuration saved. You can run 'npm run setup' again to retry authentication.\n",
+            ),
+          );
+          process.exit(1);
+        }
       }
     } catch (error: any) {
       testSpinner.fail(chalk.red("Authentication test failed"));
       console.error(chalk.red(`Error: ${error.message}\n`));
       console.log(
         chalk.yellow(
-          "Configuration saved, but authentication test failed. You can test manually later.\n",
+          "Configuration saved. Run 'npm run setup' again to retry authentication.\n",
         ),
       );
       process.exit(1);
