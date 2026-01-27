@@ -926,16 +926,17 @@ const TOOLS: Tool[] = [
   {
     name: "requests_get_details",
     description:
-      "Get detailed information about a service request including status, requested items, approval status, and activity history. More comprehensive than requests_list.",
+      "Get detailed information about a service request or requested item including status, variables, approval status, and activity history. Accepts REQ numbers (requests) or RITM numbers (requested items).",
     inputSchema: {
       type: "object",
       properties: {
-        request_number: {
+        number: {
           type: "string",
-          description: "Request number (e.g., REQ0010001) or sys_id",
+          description:
+            "Request number (REQ0010001), Requested Item number (RITM0010001), or sys_id",
         },
       },
-      required: ["request_number"],
+      required: ["number"],
     },
   },
   {
@@ -2258,6 +2259,10 @@ class ServiceNowClient {
 
   // Resolve number to sys_id for incidents, changes, etc.
   async resolveId(table: string, id: string): Promise<string> {
+    if (!id) {
+      throw new Error(`ID is required for ${table} lookup`);
+    }
+
     if (id.length === 32 && /^[a-f0-9]+$/.test(id)) {
       return id; // Already a sys_id
     }
@@ -2268,9 +2273,9 @@ class ServiceNowClient {
       query: `${numberField}=${id}`,
       fields: "sys_id",
       limit: 1,
-    })) as { result: Array<{ sys_id: string }> };
+    })) as { result?: Array<{ sys_id: string }> };
 
-    if (result.result && result.result.length > 0) {
+    if (result?.result && result.result.length > 0) {
       return result.result[0].sys_id;
     }
     throw new Error(`Could not find ${table} with ${numberField}=${id}`);
@@ -2447,9 +2452,77 @@ class ServiceNowClient {
     return this.catalogOrderNow(sys_id, quantity || 1, variables, requestedFor);
   }
 
-  async requestsGetDetails(requestNumber: string): Promise<unknown> {
-    // Resolve request number to sys_id if needed
-    const requestId = await this.resolveId("sc_request", requestNumber);
+  async requestsGetDetails(number: string): Promise<unknown> {
+    if (!number) {
+      throw new Error("Request/Item number is required");
+    }
+
+    // Detect if this is a RITM (requested item) or REQ (request)
+    const isRitm =
+      number.toUpperCase().startsWith("RITM") ||
+      number.toUpperCase().startsWith("SC_REQ_ITEM");
+
+    if (isRitm) {
+      // Handle RITM (Requested Item) numbers
+      return this.getRequestedItemDetails(number);
+    } else {
+      // Handle REQ (Request) numbers
+      return this.getRequestDetails(number);
+    }
+  }
+
+  private async getRequestedItemDetails(ritmNumber: string): Promise<unknown> {
+    // Resolve RITM number to sys_id
+    const ritmId = await this.resolveId("sc_req_item", ritmNumber);
+
+    // Get requested item details
+    const item = await this.tableGet("sc_req_item", ritmId);
+
+    // Get variables for this requested item
+    const variablesResult = (await this.tableQuery("sc_item_option_mtom", {
+      query: `request_item=${ritmId}`,
+      fields:
+        "sc_item_option.item_option_new.question_text,sc_item_option.value",
+      limit: 100,
+    })) as { result?: Array<Record<string, unknown>> };
+
+    // Parse variables into a cleaner format
+    const variables: Record<string, string> = {};
+    if (variablesResult?.result) {
+      for (const v of variablesResult.result) {
+        const questionText =
+          (v["sc_item_option.item_option_new.question_text"] as string) ||
+          "Unknown";
+        const value = (v["sc_item_option.value"] as string) || "";
+        variables[questionText] = value;
+      }
+    }
+
+    // Get approval records for this item
+    const approvals = await this.tableQuery("sysapproval_approver", {
+      query: `sysapproval=${ritmId}`,
+      fields: "state,approver,comments,sys_created_on",
+    });
+
+    // Get activity history
+    const activities = await this.tableQuery("sys_journal_field", {
+      query: `element_id=${ritmId}`,
+      fields: "element,value,sys_created_on,sys_created_by",
+      limit: 20,
+    });
+
+    return {
+      type: "requested_item",
+      item,
+      variables,
+      approvals,
+      activities,
+    };
+  }
+
+  private async getRequestDetails(reqNumber: string): Promise<unknown> {
+    // Resolve request number to sys_id
+    const requestId = await this.resolveId("sc_request", reqNumber);
 
     // Get request details
     const request = await this.tableGet("sc_request", requestId);
@@ -2474,6 +2547,7 @@ class ServiceNowClient {
     });
 
     return {
+      type: "request",
       request,
       items,
       approvals,
@@ -3461,7 +3535,7 @@ class ServiceNowMcpServer {
         );
 
       case "requests_get_details":
-        return this.client.requestsGetDetails(args.request_number as string);
+        return this.client.requestsGetDetails(args.number as string);
 
       case "requests_get_my_recent":
         return this.client.requestsGetMyRecent((args.limit as number) || 10);
