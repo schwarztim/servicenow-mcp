@@ -148,25 +148,38 @@ export class BrowserAuthManager {
 
   /**
    * Open browser and capture fresh authentication
+   * Uses robust auth: headless first, then visible fallback
    */
   private async refreshFromBrowser(): Promise<void> {
     this.isRefreshing = true;
 
     try {
       console.error(`\n🔐 Authentication required for ${this.serviceName}\n`);
-      console.error(`Opening browser to ${this.loginUrl}\n`);
-      console.error(`Please log in (handle CAPTCHA, 2FA, SSO as needed)\n`);
-      console.error(
-        `This MCP will automatically continue once you complete login.\n`,
-      );
+      console.error(`Attempting headless authentication first...\n`);
 
-      // Use the existing auth-browser.ts module
-      const { authenticateViaBrowser } = await import("./auth-browser.js");
-      const result = await authenticateViaBrowser(this.loginUrl);
+      // Use robust auth which tries headless first, then falls back to visible browser
+      const { robustAuthenticate } = await import("./robust-auth.js");
+      const robustResult = await robustAuthenticate(this.loginUrl);
 
-      if (!result.success) {
-        throw new Error(result.error || "Authentication failed");
+      if (!robustResult.success) {
+        throw new Error(robustResult.error || "Authentication failed");
       }
+
+      // Convert robust result to the format expected by the rest of this class
+      // Robust auth returns cookies as a string, we need to parse them back
+      const cookieString = robustResult.cookies || "";
+      const parsedCookies = cookieString.split("; ").map((pair) => {
+        const [name, ...valueParts] = pair.split("=");
+        return { name, value: valueParts.join("=") };
+      });
+
+      // Build a result object compatible with the original flow
+      const result = {
+        success: true,
+        cookies: parsedCookies,
+        userToken: robustResult.userToken,
+        error: undefined,
+      };
 
       // Extract tokens from cookies
       const capturedData: TokenData = {
@@ -282,7 +295,8 @@ export class BrowserAuthManager {
   }
 
   /**
-   * Handle authentication error - trigger re-auth
+   * Handle authentication error - trigger re-auth using robust auth
+   * (headless first, then visible browser fallback)
    */
   async handleAuthError(error: any): Promise<void> {
     // Check if it's an auth error (401, 403)
@@ -292,9 +306,40 @@ export class BrowserAuthManager {
       error.message?.includes("auth") ||
       error.message?.includes("unauthorized")
     ) {
-      console.error(`\n⚠️  Authentication failed. Re-authenticating...\n`);
+      console.error(
+        `\n⚠️  Authentication failed (${error.response?.status || "unknown"}). Re-authenticating with robust fallback...\n`,
+      );
       this.tokens = null; // Clear existing tokens
-      await this.refreshFromBrowser();
+
+      // Use robust auth module for re-authentication (handles headless→visible fallback)
+      const { handleAuthFailure } = await import("./robust-auth.js");
+      const result = await handleAuthFailure();
+
+      if (!result.success) {
+        throw new Error(
+          `Re-authentication failed: ${result.error}. Please run 'npm run setup' to reconfigure.`,
+        );
+      }
+
+      // Reload credentials from ~/.servicenow-mcp/cookies.json (where robust-auth saves them)
+      const { loadCookies } = await import("./auth-browser.js");
+      const freshAuth = loadCookies();
+
+      if (!freshAuth) {
+        throw new Error(
+          "Re-authentication completed but failed to load tokens. Please check ~/.servicenow-mcp/cookies.json",
+        );
+      }
+
+      // Update this manager's tokens from the fresh auth
+      this.tokens = {
+        sessionCookie: freshAuth.cookies,
+        accessToken: freshAuth.userToken,
+        capturedAt: Date.now(),
+        additionalCookies: {},
+      };
+
+      console.error("✅ Re-authentication successful, credentials reloaded");
     } else {
       throw error;
     }

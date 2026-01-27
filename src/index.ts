@@ -33,6 +33,11 @@ import { BrowserAuthManager } from "./browser-auth.js";
 import { autoSetup } from "./auto-setup.js";
 import { ConfigManager } from "./auth-config.js";
 import { CredentialStore } from "./credential-store.js";
+import {
+  robustAuthenticate,
+  handleAuthFailure,
+  validateSession as robustValidateSession,
+} from "./robust-auth.js";
 
 // Configuration from environment
 const INSTANCE_URL = process.env.SERVICENOW_INSTANCE_URL || "";
@@ -2111,22 +2116,34 @@ class ServiceNowClient {
         body: body ? JSON.stringify(body) : undefined,
       });
 
-      // Handle auth errors with auto-renewal
+      // Handle auth errors with robust auto-renewal (headless first, then visible fallback)
       if (
         (response.status === 401 || response.status === 403) &&
         this.authMethod === "browser" &&
-        this.authManager &&
         retries > 0
       ) {
-        console.error("⚠️  Authentication failed. Triggering auto-renewal...");
+        console.error(
+          `⚠️  Authentication failed (${response.status}). Triggering robust re-authentication...`,
+        );
 
-        // Trigger auto-renewal via auth manager
-        await this.authManager.handleAuthError({
-          response: { status: response.status },
-        });
+        // Use robust auth which tries headless first, then falls back to visible browser
+        const authResult = await handleAuthFailure();
 
-        // Retry the request with fresh credentials
-        return makeAuthenticatedRequest(retries - 1);
+        if (authResult.success) {
+          // Reload the global browserAuth and update this client's credentials
+          reloadBrowserAuth();
+          this.reloadCredentials();
+          console.error("✅ Re-authentication successful. Retrying request...");
+
+          // Retry the request with fresh credentials
+          return makeAuthenticatedRequest(retries - 1);
+        } else {
+          console.error(`❌ Re-authentication failed: ${authResult.error}`);
+          throw new Error(
+            `Authentication failed and could not be recovered: ${authResult.error}. ` +
+              `Please run 'npm run setup' to reconfigure credentials.`,
+          );
+        }
       }
 
       if (!response.ok) {

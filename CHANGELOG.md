@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-01-27
+
+### Added - Enterprise-Grade Robust Authentication
+
+**🔐 Major Feature: Automatic 401 Recovery with Intelligent Fallback**
+
+Enterprise-grade authentication that never hangs and always recovers from failures.
+
+**What's New:**
+
+1. **Robust Auth Module** (`src/robust-auth.ts`)
+   - Headless-first authentication (60s timeout)
+   - Automatic fallback to visible browser (5min timeout) if headless fails
+   - Proper browser process cleanup in all scenarios
+   - Credential auto-loading from config/keychain
+
+2. **Automatic 401 Recovery**
+   - Any 401/403 response triggers automatic re-authentication
+   - Uses headless auth first for seamless background recovery
+   - Falls back to visible browser only when headless fails
+   - Requests automatically retry after successful re-auth
+
+3. **Session Validation**
+   - New `validateSession()` function to test auth validity
+   - Proactive session checking before expensive operations
+
+4. **Browser Cleanup**
+   - Proper `finally` blocks ensure browser processes are always cleaned up
+   - No more zombie browser processes from failed auth attempts
+   - Timeouts prevent infinite hanging
+
+**Files Added:**
+
+- `src/robust-auth.ts` - Core robust authentication module
+
+**Files Modified:**
+
+- `src/index.ts` - Integrated robust auth for 401 handling
+- `src/browser-auth.ts` - Updated to use robust auth for re-authentication
+
+**Enterprise Guarantees:**
+
+- Authentication never hangs (proper timeouts at every step)
+- 401 errors always trigger recovery (not just fail)
+- Browser fallback always available when headless fails
+- Processes cleaned up even on failure
+
+---
+
 ## [2.2.1] - 2026-01-27
 
 ### Changed
