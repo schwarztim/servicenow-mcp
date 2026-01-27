@@ -42,6 +42,7 @@
     "dev": "tsx src/index.ts",
     "auth": "tsx src/auth-browser.ts",
     "setup": "tsx src/cli/setup.ts",
+    "test-auth": "tsx src/cli/health-check.ts",
     "prepublishOnly": "npm run build",
     "postinstall": "playwright install firefox"
   },
