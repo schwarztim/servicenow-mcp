@@ -57,10 +57,20 @@ async function isOnServiceNowPage(page: any): Promise<boolean> {
 
   const isServiceNowPage =
     currentUrl.includes("service-now.com") &&
-    (currentUrl.includes("/nav/") ||
-      currentUrl.includes("/now/") ||
-      currentUrl.includes("/$") ||
-      currentUrl.includes("/welcome"));
+    (currentUrl.includes("/nav") || // Navigator UI
+      currentUrl.includes("/now/") || // Next Experience
+      currentUrl.includes("/$") || // Dollar sign paths
+      currentUrl.includes("/welcome") || // Welcome page
+      currentUrl.includes("/home") || // Homepage
+      currentUrl.includes("/sp") || // Service Portal
+      currentUrl.includes("/csm") || // Customer Service Management
+      currentUrl.includes("/esc") || // Employee Service Center
+      currentUrl.includes("/hrsd") || // HR Service Delivery
+      currentUrl.includes("/itsm") || // IT Service Management
+      currentUrl.includes("/incident") || // Incident management
+      currentUrl.includes("/kb_") || // Knowledge Base
+      currentUrl.includes("/ui/") || // UI pages
+      new URL(currentUrl).pathname === "/"); // Root path
 
   return !isLoginPage && isServiceNowPage;
 }
@@ -120,16 +130,17 @@ export async function authenticateViaBrowser(
     );
   }
 
-  const browser = await firefox.launch({
+  let browser = await firefox.launch({
     headless: options?.headless ?? true, // Default to headless (background)
   });
 
-  const context = await browser.newContext({
+  let context = await browser.newContext({
     viewport: { width: 1280, height: 800 },
     userAgent: getUserAgent(),
   });
 
-  const page = await context.newPage();
+  let page = await context.newPage();
+  let needsVisibleFallback = false;
 
   try {
     // Navigate to ServiceNow
@@ -154,22 +165,57 @@ export async function authenticateViaBrowser(
 
       if (!automationResult.success) {
         logger.error(`Automated login failed: ${automationResult.error}`);
-        logger.info("💡 Falling back to manual authentication...");
 
-        // Don't throw - fall through to manual flow
-        // The browser is already open, just wait for manual intervention
+        // Check if this was a push MFA situation
+        if (automationResult.requiresManualMfa) {
+          logger.info(
+            "📱 Push MFA detected - opening visible browser for approval...",
+          );
+        } else {
+          logger.info(
+            "💡 Falling back to visible browser for manual authentication...",
+          );
+        }
+
+        // CRITICAL FIX: Close headless browser and relaunch as visible
+        // The old code left the browser headless, making "manual" auth impossible
+        if (options?.headless !== false) {
+          needsVisibleFallback = true;
+          await browser.close();
+
+          // Re-launch browser in VISIBLE mode
+          browser = await firefox.launch({ headless: false });
+          context = await browser.newContext({
+            viewport: { width: 1280, height: 800 },
+            userAgent: getUserAgent(),
+          });
+          page = await context.newPage();
+
+          // Navigate back to ServiceNow
+          await page.goto(instanceUrl, { waitUntil: "networkidle" });
+          logger.info(
+            "🌐 Visible browser opened - please complete authentication",
+          );
+        }
       } else {
         logger.info("✅ Automated login successful!");
       }
     }
 
     // Manual authentication flow (or fallback from failed automation)
-    if (!isAutomated || !(await isOnServiceNowPage(page))) {
+    if (
+      !isAutomated ||
+      needsVisibleFallback ||
+      !(await isOnServiceNowPage(page))
+    ) {
       if (!isAutomated) {
         logger.info("⏳ Waiting for you to complete SSO login...");
         logger.info(
           "   (The browser will close automatically once authenticated)",
         );
+      } else if (needsVisibleFallback) {
+        logger.info("⏳ Waiting for manual authentication...");
+        logger.info("   Complete the login in the browser window");
       }
 
       // Wait for successful authentication by detecting:
@@ -361,17 +407,44 @@ if (
   process.argv[1]?.endsWith("auth-browser.ts") ||
   process.argv[1]?.endsWith("auth-browser.js")
 ) {
-  const instanceUrl = process.argv[2] || process.env.SERVICENOW_INSTANCE_URL;
+  // Parse CLI arguments
+  const args = process.argv.slice(2);
+  const forceVisible = args.includes("--visible") || args.includes("-v");
+  const urlArg = args.find((a) => !a.startsWith("-"));
+  const instanceUrl = urlArg || process.env.SERVICENOW_INSTANCE_URL;
 
   if (!instanceUrl) {
-    console.error("Usage: npm run auth <SERVICENOW_INSTANCE_URL>");
+    console.error("Usage: npm run auth [OPTIONS] <SERVICENOW_INSTANCE_URL>");
     console.error("   Or: set SERVICENOW_INSTANCE_URL environment variable");
+    console.error("");
+    console.error("Options:");
+    console.error(
+      "  --visible, -v   Force visible browser (skip headless attempt)",
+    );
+    console.error("");
+    console.error("Examples:");
+    console.error("  npm run auth https://mycompany.service-now.com");
+    console.error(
+      "  npm run auth -- --visible https://mycompany.service-now.com",
+    );
     process.exit(1);
   }
 
-  authenticateViaBrowser(instanceUrl)
-    .then((result) => {
-      process.exit(result.success ? 0 : 1);
+  // Use robust auth for proper headless→visible fallback
+  import("./robust-auth.js")
+    .then(async ({ robustAuthenticate }) => {
+      // If --visible flag is set, we need a different approach
+      if (forceVisible) {
+        console.log("🌐 Forced visible browser mode");
+        const result = await authenticateViaBrowser(instanceUrl, {
+          headless: false,
+        });
+        process.exit(result.success ? 0 : 1);
+      } else {
+        // Use robustAuthenticate which has proper headless→visible fallback
+        const result = await robustAuthenticate(instanceUrl);
+        process.exit(result.success ? 0 : 1);
+      }
     })
     .catch((error) => {
       console.error("Fatal error:", error);

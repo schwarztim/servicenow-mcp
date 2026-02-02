@@ -41,6 +41,22 @@ const SELECTORS = {
     'button:has-text("Verify")',
     "#idSubmit_SAOTCC_Continue",
   ],
+  // Push MFA detection - these indicate waiting for Authenticator approval
+  mfaPushPrompt: [
+    'div:has-text("Approve sign in request")',
+    'div:has-text("Open your Authenticator app")',
+    'div:has-text("We\'ve sent a notification")',
+    'div:has-text("Approve the request")',
+    'div:has-text("Check your phone")',
+    "#idDiv_SAOTCAS_Title", // Azure AD push notification title div
+    "#idRichContext_DisplaySign", // Number matching display
+  ],
+  // Phone call MFA detection
+  mfaPhoneCall: [
+    'div:has-text("We\'re calling")',
+    'div:has-text("Answer the call")',
+    'div:has-text("Press #")',
+  ],
   staySignedIn: [
     'input[type="submit"][value="Yes"]',
     'button:has-text("Yes")',
@@ -59,6 +75,7 @@ export interface LoginResult {
   success: boolean;
   error?: string;
   cookies?: any[];
+  requiresManualMfa?: boolean; // True when push/phone MFA detected (needs visible browser)
 }
 
 export class AzureADAutomator {
@@ -111,13 +128,24 @@ export class AzureADAutomator {
 
       // Step 3: MFA code (may or may not appear)
       await page.waitForTimeout(1000);
-      const mfaHandled = await this.detectAndFillMFA(
+      const mfaResult = await this.detectAndFillMFA(
         page,
         credentials.mfaScript,
         timeout,
       );
-      if (!mfaHandled) {
-        this.logger.warn("MFA handling failed or not required");
+
+      // Handle push MFA - requires visible browser for user to approve
+      if (mfaResult === "push_mfa_detected") {
+        return {
+          success: false,
+          error:
+            "Push MFA detected - requires visible browser for manual approval",
+          requiresManualMfa: true,
+        };
+      }
+
+      if (!mfaResult) {
+        this.logger.warn("MFA handling failed");
       }
 
       // Step 4: Handle "Stay signed in?" prompt
@@ -272,15 +300,29 @@ export class AzureADAutomator {
 
   /**
    * Detect MFA field, generate code via script, and submit
+   * Also detects push-based MFA that requires manual approval
    */
   private async detectAndFillMFA(
     page: Page,
     mfaScript: string,
     timeout: number,
-  ): Promise<boolean> {
-    this.logger.info("Checking for MFA field");
+  ): Promise<boolean | "push_mfa_detected"> {
+    this.logger.info("Checking for MFA prompts");
 
-    // Check if MFA field exists (may not be required)
+    // First, check for push MFA prompts (Authenticator app, phone call)
+    // These require user interaction and can't be automated
+    const pushMfaDetected = await this.detectPushMfa(page);
+    if (pushMfaDetected) {
+      this.logger.warn(
+        "⚠️  Push/phone MFA detected - requires manual approval!",
+      );
+      this.logger.warn(
+        "   Please check your Microsoft Authenticator app or phone",
+      );
+      return "push_mfa_detected"; // Signal that we need visible browser
+    }
+
+    // Check if TOTP code input field exists (may not be required)
     const mfaFieldExists = await this.trySelectors(
       page,
       SELECTORS.mfaCode,
@@ -351,6 +393,69 @@ export class AzureADAutomator {
 
     this.logger.info("MFA Verify button clicked");
     return true;
+  }
+
+  /**
+   * Detect push-based MFA prompts (Authenticator app, phone call)
+   * These cannot be automated and require manual user interaction
+   */
+  private async detectPushMfa(page: Page): Promise<boolean> {
+    // Check for Authenticator app push notification prompts
+    for (const selector of SELECTORS.mfaPushPrompt) {
+      try {
+        const element = await page.waitForSelector(selector, {
+          timeout: 3000,
+          state: "visible",
+        });
+        if (element) {
+          this.logger.debug(`Push MFA detected via: ${selector}`);
+          return true;
+        }
+      } catch {
+        // Selector not found, continue
+      }
+    }
+
+    // Check for phone call MFA prompts
+    for (const selector of SELECTORS.mfaPhoneCall) {
+      try {
+        const element = await page.waitForSelector(selector, {
+          timeout: 2000,
+          state: "visible",
+        });
+        if (element) {
+          this.logger.debug(`Phone MFA detected via: ${selector}`);
+          return true;
+        }
+      } catch {
+        // Selector not found, continue
+      }
+    }
+
+    // Also check page content for MFA-related text
+    try {
+      const pageContent = await page.content();
+      const pushMfaPatterns = [
+        /approve.*sign.*in.*request/i,
+        /open.*authenticator.*app/i,
+        /sent.*notification/i,
+        /check.*your.*phone/i,
+        /we're.*calling/i,
+        /answer.*call/i,
+        /enter.*the.*number.*shown/i, // Number matching
+      ];
+
+      for (const pattern of pushMfaPatterns) {
+        if (pattern.test(pageContent)) {
+          this.logger.debug(`Push MFA detected via page content: ${pattern}`);
+          return true;
+        }
+      }
+    } catch {
+      // Ignore content check errors
+    }
+
+    return false;
   }
 
   /**
@@ -475,13 +580,23 @@ export class AzureADAutomator {
         const instanceHostname = new URL(this.instanceUrl).hostname;
         const onCorrectInstance = urlObj.hostname === instanceHostname;
 
-        // Check for ServiceNow-specific URL patterns
+        // Check for ServiceNow-specific URL patterns (comprehensive list)
         const hasServiceNowPath =
-          url.includes("/nav") ||
-          url.includes("/now/") ||
-          url.includes("/$") ||
-          url.includes("/welcome") ||
-          url.includes("/home");
+          url.includes("/nav") || // Navigator UI
+          url.includes("/now/") || // Next Experience (Agent Workspace, etc.)
+          url.includes("/$") || // Dollar sign paths
+          url.includes("/welcome") || // Welcome page
+          url.includes("/home") || // Homepage
+          url.includes("/sp") || // Service Portal
+          url.includes("/csm") || // Customer Service Management
+          url.includes("/esc") || // Employee Service Center
+          url.includes("/hrsd") || // HR Service Delivery
+          url.includes("/itsm") || // IT Service Management
+          url.includes("/incident") || // Incident management
+          url.includes("/kb_") || // Knowledge Base
+          url.includes("/ui/") || // UI pages
+          urlObj.pathname === "/" || // Root path (authenticated homepage)
+          urlObj.pathname === ""; // Empty path
 
         return onCorrectInstance && hasServiceNowPath;
       }
@@ -493,7 +608,17 @@ export class AzureADAutomator {
         url.includes("/now/") ||
         url.includes("/$") ||
         url.includes("/welcome") ||
-        url.includes("/home");
+        url.includes("/home") ||
+        url.includes("/sp") ||
+        url.includes("/csm") ||
+        url.includes("/esc") ||
+        url.includes("/hrsd") ||
+        url.includes("/itsm") ||
+        url.includes("/incident") ||
+        url.includes("/kb_") ||
+        url.includes("/ui/") ||
+        urlObj.pathname === "/" ||
+        urlObj.pathname === "";
 
       return isServiceNowDomain && hasServiceNowPath;
     } catch {
