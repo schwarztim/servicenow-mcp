@@ -132,6 +132,9 @@ export async function authenticateViaBrowser(
 
   let browser = await firefox.launch({
     headless: options?.headless ?? true, // Default to headless (background)
+    firefoxUserPrefs: {
+      "security.default_personal_cert": "Select Automatically",
+    },
   });
 
   let context = await browser.newContext({
@@ -184,7 +187,12 @@ export async function authenticateViaBrowser(
           await browser.close();
 
           // Re-launch browser in VISIBLE mode
-          browser = await firefox.launch({ headless: false });
+          browser = await firefox.launch({
+            headless: false,
+            firefoxUserPrefs: {
+              "security.default_personal_cert": "Select Automatically",
+            },
+          });
           context = await browser.newContext({
             viewport: { width: 1280, height: 800 },
             userAgent: getUserAgent(),

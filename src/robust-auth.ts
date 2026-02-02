@@ -147,6 +147,9 @@ async function performAuth(
     browser = await firefox.launch({
       headless,
       timeout: 30000,
+      firefoxUserPrefs: {
+        "security.default_personal_cert": "Select Automatically",
+      },
     });
 
     const context = await browser.newContext({

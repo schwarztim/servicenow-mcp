@@ -240,6 +240,9 @@ async function main() {
       console.log(chalk.dim("  Attempting background authentication...\n"));
       const browser = await firefox.launch({
         headless: true, // Background by default
+        firefoxUserPrefs: {
+          "security.default_personal_cert": "Select Automatically",
+        },
       });
 
       const context = await browser.newContext();
@@ -307,6 +310,9 @@ async function main() {
         try {
           const visibleBrowser = await firefox.launch({
             headless: false,
+            firefoxUserPrefs: {
+              "security.default_personal_cert": "Select Automatically",
+            },
           });
 
           const visibleContext = await visibleBrowser.newContext();
