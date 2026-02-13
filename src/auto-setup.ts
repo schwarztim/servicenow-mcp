@@ -154,33 +154,7 @@ export function runSetupWizard(): boolean {
  * For expired cookies, attempts background re-auth first before falling back to wizard
  */
 export async function autoSetup(): Promise<boolean> {
-  const status = checkSetupNeeded();
-
-  if (!status.needsSetup) {
-    return true; // Already configured
-  }
-
-  console.error(`⚠️  ${status.reason}`);
-
-  // If cookies expired but config exists, try background re-auth first
-  if (status.cookiesExpired && status.hasConfig) {
-    console.error("🔄 Attempting automatic re-authentication...");
-    const bgAuthSuccess = await runBackgroundAuth();
-    if (bgAuthSuccess) {
-      return true; // Background re-auth succeeded
-    }
-    console.error(
-      "⚠️  Background re-authentication failed, falling back to interactive setup",
-    );
-  }
-
-  // Fall back to interactive wizard for initial setup or if background auth failed
-  const success = runSetupWizard();
-
-  if (!success) {
-    console.error("\n❌ Setup failed. Please run 'npm run setup' manually.\n");
-    return false;
-  }
-
+  // Auth is handled lazily by src/auth.ts (keychain + headless Playwright).
+  // No pre-flight checks needed — getAuthHeaders() runs on first API call.
   return true;
 }

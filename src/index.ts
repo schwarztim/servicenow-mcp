@@ -30,6 +30,7 @@ import {
   refreshSession,
 } from "./auth-browser.js";
 import { BrowserAuthManager } from "./browser-auth.js";
+import { getAuthHeaders, clearCache as clearAuthCache } from "./auth.js";
 import { autoSetup } from "./auto-setup.js";
 import { ConfigManager } from "./auth-config.js";
 import { CredentialStore } from "./credential-store.js";
@@ -41,6 +42,7 @@ import {
 
 // Configuration from environment
 const INSTANCE_URL = process.env.SERVICENOW_INSTANCE_URL || "";
+const TARGET_URL = INSTANCE_URL || "https://instance.service-now.com";
 const USERNAME = process.env.SERVICENOW_USERNAME || "";
 const PASSWORD = process.env.SERVICENOW_PASSWORD || "";
 const SESSION_TOKEN = process.env.SERVICENOW_SESSION_TOKEN || "";
@@ -2017,29 +2019,13 @@ class ServiceNowClient {
 
   // Validate session by making a lightweight API call
   async validateSession(): Promise<{ valid: boolean; error?: string }> {
-    if (this.authMethod === "none") {
-      return { valid: false, error: "No authentication configured" };
-    }
-
     try {
-      // Make a minimal API call to check session validity
       const url = `${this.baseUrl}/api/now/table/sys_user?sysparm_limit=1&sysparm_fields=sys_id`;
-      const headers: Record<string, string> = {
-        Accept: "application/json",
-      };
-
-      if (this.authMethod === "browser" && this.sessionCookies) {
-        headers["Cookie"] = this.sessionCookies;
-      } else if (this.authHeader) {
-        headers["Authorization"] = this.authHeader;
-      }
-
-      const response = await fetch(url, { method: "GET", headers });
-
+      const authHeaders = await getAuthHeaders();
+      const response = await fetch(url, { method: "GET", headers: { ...authHeaders } });
       if (response.status === 401) {
         return { valid: false, error: "Session expired (401 Unauthorized)" };
       }
-
       return { valid: response.ok };
     } catch (err) {
       return {
@@ -2077,24 +2063,10 @@ class ServiceNowClient {
       const headers = { ...baseHeaders };
 
       // Apply authentication based on method
-      if (this.authMethod === "browser" && this.authManager) {
-        // Use auto-renewing auth manager (automatically refreshes if expired)
-        try {
-          const authData = await this.authManager.getAuthData();
-          headers["Cookie"] = authData.cookies;
-          if (authData.headers["X-UserToken"]) {
-            headers["x-usertoken"] = authData.headers["X-UserToken"];
-          }
-        } catch (error) {
-          // Auth manager will have triggered browser re-auth if needed
-          throw error;
-        }
-      } else if (this.authMethod === "browser" && this.sessionCookies) {
-        // Fallback to static cookies if auth manager not initialized
-        headers["Cookie"] = this.sessionCookies;
-        if (this.userToken) {
-          headers["x-usertoken"] = this.userToken;
-        }
+      if (this.authMethod === "browser") {
+        // Use clean auth module: keychain → headless Playwright → cookies + g_ck
+        const authHeaders = await getAuthHeaders();
+        Object.assign(headers, authHeaders);
       } else if (useGraphQL && this.userToken) {
         headers["x-usertoken"] = this.userToken;
         if (this.sessionCookies) {
@@ -2103,12 +2075,19 @@ class ServiceNowClient {
       } else if (this.authHeader) {
         headers["Authorization"] = this.authHeader;
       } else {
-        throw new Error(
-          "No authentication configured. Options:\n" +
-            "1. Use auth_browser tool to authenticate via SSO in browser\n" +
-            "2. Set SERVICENOW_USERNAME + SERVICENOW_PASSWORD (for REST API)\n" +
-            "3. Set SERVICENOW_SESSION_TOKEN + SERVICENOW_USER_TOKEN (for session auth)",
-        );
+        // No explicit auth configured — try getAuthHeaders() as last resort
+        try {
+          const authHeaders = await getAuthHeaders();
+          Object.assign(headers, authHeaders);
+          this.authMethod = "browser";
+        } catch {
+          throw new Error(
+            "No authentication configured. Options:\n" +
+              "1. Add corp-sso-email and corp-sso-password to macOS Keychain\n" +
+              "2. Set SERVICENOW_USERNAME + SERVICENOW_PASSWORD (for REST API)\n" +
+              "3. Set SERVICENOW_SESSION_TOKEN + SERVICENOW_USER_TOKEN (for session auth)",
+          );
+        }
       }
 
       const response = await fetch(url, {
@@ -2117,34 +2096,17 @@ class ServiceNowClient {
         body: body ? JSON.stringify(body) : undefined,
       });
 
-      // Handle auth errors with robust auto-renewal (headless first, then visible fallback)
+      // Handle auth errors: clear cache and retry with fresh headless auth
       if (
         (response.status === 401 || response.status === 403) &&
         this.authMethod === "browser" &&
         retries > 0
       ) {
         console.error(
-          `⚠️  Authentication failed (${response.status}). Triggering robust re-authentication...`,
+          `⚠️  Auth failed (${response.status}). Clearing cache, re-authenticating headless...`,
         );
-
-        // Use robust auth which tries headless first, then falls back to visible browser
-        const authResult = await handleAuthFailure();
-
-        if (authResult.success) {
-          // Reload the global browserAuth and update this client's credentials
-          reloadBrowserAuth();
-          this.reloadCredentials();
-          console.error("✅ Re-authentication successful. Retrying request...");
-
-          // Retry the request with fresh credentials
-          return makeAuthenticatedRequest(retries - 1);
-        } else {
-          console.error(`❌ Re-authentication failed: ${authResult.error}`);
-          throw new Error(
-            `Authentication failed and could not be recovered: ${authResult.error}. ` +
-              `Please run 'npm run setup' to reconfigure credentials.`,
-          );
-        }
+        clearAuthCache();
+        return makeAuthenticatedRequest(retries - 1);
       }
 
       if (!response.ok) {
@@ -3037,61 +2999,15 @@ class ServiceNowMcpServer {
     switch (name) {
       // Authentication
       case "auth_browser": {
-        const instanceUrl =
-          (args.instance_url as string) ||
-          INSTANCE_URL ||
-          "https://instance.service-now.com";
-
-        // Load config to get headless preference and credentials
-        const configManager = new ConfigManager();
-        const config = configManager.load();
-        const credentialStore = new CredentialStore();
-
-        // Attempt automated authentication if credentials available
-        let authOptions: any = {};
-        if (config) {
-          console.error(
-            `[auth_browser] Config loaded: headless=${config.headless}, email=${config.email}`,
-          );
-          authOptions.headless = config.headless; // Respect config's headless setting
-          authOptions.config = config;
-
-          // Try to load credentials from keychain
-          const password = await credentialStore.getPassword(config.email);
-          console.error(
-            `[auth_browser] Password from keychain: ${password ? "✅ loaded" : "❌ not found"}`,
-          );
-          if (password) {
-            authOptions.email = config.email;
-            authOptions.password = password;
-            authOptions.mfaScript = config.mfaScript || "";
-            console.error(
-              `[auth_browser] Auth options prepared: headless=${authOptions.headless}, email=${authOptions.email}, hasPassword=${!!authOptions.password}`,
-            );
-          }
-        } else {
-          console.error(
-            "[auth_browser] No config found - using manual authentication",
-          );
-        }
-
-        const result = await authenticateViaBrowser(instanceUrl, authOptions);
-        if (result.success) {
-          // Hot-reload credentials without requiring restart
-          const reloaded = this.client.reloadCredentials();
-          return {
-            status: "success",
-            message: reloaded
-              ? "Browser authentication completed. Credentials reloaded - ready to use immediately."
-              : "Browser authentication completed. Cookies saved. Note: If this is first auth, you may need to restart Claude.",
-            instanceUrl: result.instanceUrl,
-            cookieCount: result.cookies.length,
-            hasUserToken: !!result.userToken,
-            credentialsReloaded: reloaded,
-          };
-        } else {
-          throw new Error(result.error || "Browser authentication failed");
-        }
+        // Use clean headless auth — clears cache to force fresh login
+        clearAuthCache();
+        const headers = await getAuthHeaders();
+        return {
+          status: "success",
+          message: "Headless authentication completed. Ready to use immediately.",
+          instanceUrl: TARGET_URL,
+          hasUserToken: !!headers["X-UserToken"],
+        };
       }
 
       case "auth_status": {
@@ -3134,24 +3050,14 @@ class ServiceNowMcpServer {
       }
 
       case "auth_refresh": {
-        const result = await refreshSession();
-        if (result.success) {
-          const reloaded = this.client.reloadCredentials();
-          return {
-            status: "success",
-            message: reloaded
-              ? "Session refreshed. Credentials reloaded - ready to use immediately."
-              : "Session refreshed. Cookies saved.",
-            instanceUrl: result.instanceUrl,
-            cookieCount: result.cookies.length,
-            hasUserToken: !!result.userToken,
-            credentialsReloaded: reloaded,
-          };
-        } else {
-          throw new Error(
-            result.error || "Session refresh failed. Use auth_browser instead.",
-          );
-        }
+        clearAuthCache();
+        const refreshHeaders = await getAuthHeaders();
+        return {
+          status: "success",
+          message: "Session refreshed. Credentials reloaded - ready to use immediately.",
+          instanceUrl: TARGET_URL,
+          hasUserToken: !!refreshHeaders["X-UserToken"],
+        };
       }
 
       // Unified Work Queue

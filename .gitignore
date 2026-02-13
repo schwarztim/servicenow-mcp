@@ -53,3 +53,6 @@ temp/
 
 # thesun artifacts
 .thesun/
+
+# Cookie cache (session tokens)
+.cookie-cache.json

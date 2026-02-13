@@ -249,24 +249,75 @@ export async function authenticateViaBrowser(
       }
     }
 
-    // Get all cookies from the session
-    const cookies = await context.cookies();
-
     // Try to extract user token from page (used for CSRF protection)
     let userToken: string | undefined;
     try {
       userToken = await page.evaluate(() => {
         // ServiceNow stores g_ck (security token) in window object
         return (window as any).g_ck || (window as any).NOW?.g_ck || "";
-      });
+      }) || undefined;
     } catch {
       // Token extraction optional
+    }
+
+    // CRITICAL: Navigate to a REST API endpoint within the browser to activate
+    // the REST API session. SSO creates a UI session but REST endpoints may
+    // set additional session cookies needed for API access outside the browser.
+    const cleanInstanceUrl = instanceUrl.replace(/\/$/, "");
+    try {
+      const apiUrl = `${cleanInstanceUrl}/api/now/table/sys_user?sysparm_limit=1&sysparm_fields=sys_id`;
+      logger.info("Activating REST API session...");
+      const apiResult = await page.evaluate(async (url: string) => {
+        const resp = await fetch(url, {
+          method: "GET",
+          credentials: "same-origin",
+          headers: { "Accept": "application/json" },
+        });
+        return { status: resp.status, ok: resp.ok };
+      }, apiUrl);
+      if (apiResult.ok) {
+        logger.info("REST API session activated");
+      } else {
+        logger.warn(`REST API activation returned ${apiResult.status}`);
+      }
+    } catch {
+      logger.warn("REST API session activation failed (non-fatal)");
+    }
+
+    // Try to extract g_ck via session info API
+    if (!userToken) {
+      try {
+        userToken = await page.evaluate(async () => {
+          const resp = await fetch("/api/now/ui/user/session_info", {
+            method: "GET",
+            credentials: "same-origin",
+            headers: { "Accept": "application/json" },
+          });
+          if (resp.ok) {
+            const data = await resp.json();
+            return data?.result?.g_ck || "";
+          }
+          return "";
+        }) || undefined;
+      } catch { /* ignore */ }
+    }
+
+    // Re-capture cookies AFTER the REST API calls to include any new
+    // REST-specific session cookies
+    const cookies = await context.cookies();
+
+    // Check cookies for g_ck as last resort
+    if (!userToken) {
+      const gCkCookie = cookies.find((c: Cookie) => c.name === "g_ck");
+      if (gCkCookie) {
+        userToken = gCkCookie.value;
+      }
     }
 
     // Save cookies to file
     ensureCookieDir();
     const cookieData = {
-      instanceUrl: instanceUrl.replace(/\/$/, ""),
+      instanceUrl: cleanInstanceUrl,
       cookies: cookies,
       userToken: userToken,
       timestamp: new Date().toISOString(),
@@ -284,7 +335,7 @@ export async function authenticateViaBrowser(
 
     return {
       success: true,
-      instanceUrl: instanceUrl.replace(/\/$/, ""),
+      instanceUrl: cleanInstanceUrl,
       cookies,
       userToken,
     };
@@ -330,8 +381,20 @@ export function loadCookies(): {
       return null;
     }
 
+    // Filter to only ServiceNow domain cookies
+    // Sending unrelated cookies (e.g., Microsoft/Azure AD SSO cookies) causes 401 errors
+    const instanceHost = new URL(data.instanceUrl).hostname;
+    const filteredCookies = data.cookies.filter((c: Cookie) => {
+      const domain = c.domain || "";
+      return (
+        domain === instanceHost ||
+        domain === `.${instanceHost}` ||
+        instanceHost.endsWith(domain.startsWith(".") ? domain : `.${domain}`)
+      );
+    });
+
     // Format cookies as header string
-    const cookieString = data.cookies
+    const cookieString = filteredCookies
       .map((c: Cookie) => `${c.name}=${c.value}`)
       .join("; ");
 

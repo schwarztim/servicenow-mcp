@@ -85,8 +85,18 @@ function loadCachedCookies(): RobustAuthResult | null {
       return null;
     }
 
-    // Format cookies as string
-    const cookieString = data.cookies
+    // Filter to only ServiceNow domain cookies (non-SN cookies cause 401)
+    const instanceHost = new URL(data.instanceUrl).hostname;
+    const filteredCookies = data.cookies.filter((c: any) => {
+      const domain = c.domain || "";
+      return (
+        domain === instanceHost ||
+        domain === `.${instanceHost}` ||
+        instanceHost.endsWith(domain.startsWith(".") ? domain : `.${domain}`)
+      );
+    });
+
+    const cookieString = filteredCookies
       .map((c: any) => `${c.name}=${c.value}`)
       .join("; ");
 
@@ -182,18 +192,100 @@ async function performAuth(
     const result = await Promise.race([authPromise, timeoutPromise]);
 
     if (result.success && result.cookies) {
-      // Extract user token from page if possible
+      // Wait for ServiceNow page to fully load so g_ck token is available
+      // navpage.do uses framesets — g_ck lives inside the gsft_main frame
+      try {
+        await page.waitForTimeout(3000); // Let frames load
+      } catch { /* ignore */ }
+
       let userToken = "";
+
+      // Try main frame first
       try {
         userToken = await page.evaluate(() => {
           return (window as any).g_ck || (window as any).NOW?.g_ck || "";
         });
-      } catch {
-        // Ignore token extraction errors
+      } catch { /* ignore */ }
+
+      // Try sub-frames (navpage.do framesets)
+      if (!userToken) {
+        try {
+          for (const frame of page.frames()) {
+            try {
+              const token = await frame.evaluate(() => {
+                return (window as any).g_ck || (window as any).NOW?.g_ck || "";
+              });
+              if (token) {
+                userToken = token;
+                break;
+              }
+            } catch { /* cross-origin frame, skip */ }
+          }
+        } catch { /* ignore */ }
       }
 
-      // Save cookies
-      saveCookies(instanceUrl, result.cookies, userToken);
+      // CRITICAL: Navigate to a REST API endpoint within the browser context
+      // to activate the REST API session. SSO creates a UI session, but REST
+      // API endpoints may set additional session cookies needed for API access.
+      try {
+        const apiUrl = `${instanceUrl}/api/now/table/sys_user?sysparm_limit=1&sysparm_fields=sys_id`;
+        logger.info("Activating REST API session via in-browser API call...");
+        const apiResult = await page.evaluate(async (url: string) => {
+          const resp = await fetch(url, {
+            method: "GET",
+            credentials: "same-origin",
+            headers: { "Accept": "application/json" },
+          });
+          return { status: resp.status, ok: resp.ok };
+        }, apiUrl);
+        if (apiResult.ok) {
+          logger.info("REST API session activated successfully");
+        } else {
+          logger.warn(`REST API activation returned status ${apiResult.status}`);
+        }
+      } catch (e) {
+        logger.warn("REST API session activation failed (non-fatal)");
+      }
+
+      // Re-capture cookies AFTER the REST API call - this ensures we get
+      // any REST-specific session cookies that were set by the API endpoint
+      const freshCookies = await context.cookies();
+      logger.info(`Re-captured ${freshCookies.length} cookies after REST activation (was ${result.cookies.length})`);
+
+      // Try getting g_ck from the REST API response or cookie
+      if (!userToken) {
+        // Check for g_ck in the freshly captured cookies
+        const gCkCookie = freshCookies.find((c: any) => c.name === "g_ck");
+        if (gCkCookie) {
+          userToken = gCkCookie.value;
+        }
+      }
+
+      // Also try to extract g_ck via the session info endpoint
+      if (!userToken) {
+        try {
+          const tokenResult = await page.evaluate(async () => {
+            // Try session check endpoint which may return g_ck
+            const resp = await fetch("/api/now/ui/user/session_info", {
+              method: "GET",
+              credentials: "same-origin",
+              headers: { "Accept": "application/json" },
+            });
+            if (resp.ok) {
+              const data = await resp.json();
+              return data?.result?.g_ck || "";
+            }
+            return "";
+          });
+          if (tokenResult) {
+            userToken = tokenResult;
+            logger.info("g_ck token extracted from session_info API");
+          }
+        } catch { /* ignore */ }
+      }
+
+      // Save the FRESH cookies (after REST API activation)
+      saveCookies(instanceUrl, freshCookies, userToken);
 
       // Format cookies as string
       const cookieString = result.cookies
@@ -325,16 +417,19 @@ export async function handleAuthFailure(): Promise<RobustAuthResult> {
 export async function validateSession(
   instanceUrl: string,
   cookies: string,
+  userToken?: string,
 ): Promise<boolean> {
   try {
+    const headers: Record<string, string> = {
+      Cookie: cookies,
+      Accept: "application/json",
+    };
+    if (userToken) {
+      headers["x-usertoken"] = userToken;
+    }
     const response = await fetch(
       `${instanceUrl}/api/now/table/sys_user?sysparm_limit=1`,
-      {
-        headers: {
-          Cookie: cookies,
-          Accept: "application/json",
-        },
-      },
+      { headers },
     );
     return response.status === 200;
   } catch {

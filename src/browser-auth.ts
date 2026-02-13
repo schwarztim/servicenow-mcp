@@ -272,8 +272,10 @@ export class BrowserAuthManager {
     const cookies: string[] = [];
 
     if (this.tokens?.accessToken) {
-      headers["Authorization"] = `Bearer ${this.tokens.accessToken}`;
-      headers["X-UserToken"] = this.tokens.accessToken; // ServiceNow CSRF token
+      // g_ck is a CSRF token, NOT a Bearer/OAuth token.
+      // ServiceNow REST API uses cookies for session auth + x-usertoken for CSRF.
+      // Sending it as Bearer causes 401 because SN tries OAuth validation.
+      headers["X-UserToken"] = this.tokens.accessToken;
     }
 
     if (this.tokens?.sessionCookie) {

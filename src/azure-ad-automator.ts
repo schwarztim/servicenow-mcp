@@ -128,6 +128,15 @@ export class AzureADAutomator {
 
       // Step 3: MFA code (may or may not appear)
       await page.waitForTimeout(1000);
+
+      // Quick check: if we're already on ServiceNow after password, skip MFA
+      if (this.isServiceNowUrl(page.url())) {
+        this.logger.info("Already on ServiceNow after password - no MFA needed");
+        const cookies = await page.context().cookies();
+        this.logger.info("Azure AD login completed successfully");
+        return { success: true, cookies };
+      }
+
       const mfaResult = await this.detectAndFillMFA(
         page,
         credentials.mfaScript,
@@ -150,6 +159,15 @@ export class AzureADAutomator {
 
       // Step 4: Handle "Stay signed in?" prompt
       await page.waitForTimeout(1000);
+
+      // Quick check: if we're already on ServiceNow, skip "Stay signed in?"
+      if (this.isServiceNowUrl(page.url())) {
+        this.logger.info("Already on ServiceNow - skipping stay signed in check");
+        const cookies = await page.context().cookies();
+        this.logger.info("Azure AD login completed successfully");
+        return { success: true, cookies };
+      }
+
       await this.handleStaySignedIn(page, timeout);
 
       // Step 5: Wait for ServiceNow redirect
@@ -309,6 +327,12 @@ export class AzureADAutomator {
   ): Promise<boolean | "push_mfa_detected"> {
     this.logger.info("Checking for MFA prompts");
 
+    // Quick check: if we're already on ServiceNow, skip MFA entirely
+    if (this.isServiceNowUrl(page.url())) {
+      this.logger.info("Already on ServiceNow - MFA not needed");
+      return true;
+    }
+
     // First, check for push MFA prompts (Authenticator app, phone call)
     // These require user interaction and can't be automated
     const pushMfaDetected = await this.detectPushMfa(page);
@@ -323,10 +347,11 @@ export class AzureADAutomator {
     }
 
     // Check if TOTP code input field exists (may not be required)
+    // Use 3s timeout — if MFA field hasn't appeared by now, it won't
     const mfaFieldExists = await this.trySelectors(
       page,
       SELECTORS.mfaCode,
-      Math.min(timeout, 10000), // Don't wait too long if MFA not required
+      Math.min(timeout, 3000),
     );
 
     if (!mfaFieldExists) {
@@ -398,41 +423,16 @@ export class AzureADAutomator {
   /**
    * Detect push-based MFA prompts (Authenticator app, phone call)
    * These cannot be automated and require manual user interaction
+   * NOTE: Uses fast timeouts (500ms) to avoid burning 30+ seconds when no MFA prompt exists
    */
   private async detectPushMfa(page: Page): Promise<boolean> {
-    // Check for Authenticator app push notification prompts
-    for (const selector of SELECTORS.mfaPushPrompt) {
-      try {
-        const element = await page.waitForSelector(selector, {
-          timeout: 3000,
-          state: "visible",
-        });
-        if (element) {
-          this.logger.debug(`Push MFA detected via: ${selector}`);
-          return true;
-        }
-      } catch {
-        // Selector not found, continue
-      }
+    // Quick check: if we're already on ServiceNow, skip MFA detection entirely
+    if (this.isServiceNowUrl(page.url())) {
+      this.logger.info("Already on ServiceNow - skipping MFA detection");
+      return false;
     }
 
-    // Check for phone call MFA prompts
-    for (const selector of SELECTORS.mfaPhoneCall) {
-      try {
-        const element = await page.waitForSelector(selector, {
-          timeout: 2000,
-          state: "visible",
-        });
-        if (element) {
-          this.logger.debug(`Phone MFA detected via: ${selector}`);
-          return true;
-        }
-      } catch {
-        // Selector not found, continue
-      }
-    }
-
-    // Also check page content for MFA-related text
+    // Fast content check first (single call, no selector waiting)
     try {
       const pageContent = await page.content();
       const pushMfaPatterns = [
@@ -455,6 +455,26 @@ export class AzureADAutomator {
       // Ignore content check errors
     }
 
+    // Quick selector check with 500ms timeout per selector (not 3s)
+    const allPushSelectors = [
+      ...SELECTORS.mfaPushPrompt,
+      ...SELECTORS.mfaPhoneCall,
+    ];
+    for (const selector of allPushSelectors) {
+      try {
+        const element = await page.waitForSelector(selector, {
+          timeout: 500,
+          state: "visible",
+        });
+        if (element) {
+          this.logger.debug(`Push MFA detected via: ${selector}`);
+          return true;
+        }
+      } catch {
+        // Selector not found, continue
+      }
+    }
+
     return false;
   }
 
@@ -467,12 +487,18 @@ export class AzureADAutomator {
   ): Promise<boolean> {
     this.logger.info("Checking for 'Stay signed in?' prompt");
 
+    // Quick check: if we're already on ServiceNow, skip
+    if (this.isServiceNowUrl(page.url())) {
+      this.logger.info("Already on ServiceNow - skipping 'Stay signed in?' check");
+      return true;
+    }
+
     // Try to click the Yes button directly with a reasonable timeout
     // If it's not there, that's fine - the prompt may not appear
     const yesClicked = await this.trySelectorsWithTimeout(
       page,
       SELECTORS.staySignedIn,
-      8000, // 8 seconds - fast detection
+      5000, // 5 seconds - fast detection
       "click",
     );
 
@@ -525,6 +551,8 @@ export class AzureADAutomator {
 
   /**
    * Wait for redirect back to ServiceNow instance
+   * Uses polling loop as primary strategy since page.waitForURL can miss
+   * already-completed navigations (race condition with Azure AD redirects)
    */
   private async waitForServiceNowRedirect(
     page: Page,
@@ -532,26 +560,28 @@ export class AzureADAutomator {
   ): Promise<boolean> {
     this.logger.info("Waiting for ServiceNow redirect");
 
-    try {
-      // Check if we're already on ServiceNow (in case manual auth was fast)
-      const currentUrl = page.url();
-      if (this.isServiceNowUrl(currentUrl)) {
-        this.logger.info(`Already on ServiceNow: ${currentUrl}`);
-        return true;
-      }
+    const startTime = Date.now();
+    const pollInterval = 500; // Check every 500ms
 
-      // Wait for redirect to ServiceNow
-      await page.waitForURL((url) => this.isServiceNowUrl(url.toString()), {
-        timeout,
-      });
-      this.logger.info(`Redirected to ServiceNow: ${page.url()}`);
-      return true;
-    } catch (error) {
-      this.logger.error(
-        `Timeout waiting for ServiceNow redirect. Current URL: ${page.url()}`,
-      );
-      return false;
+    // Polling loop - more reliable than waitForURL for catching
+    // redirects that may have already completed
+    while (Date.now() - startTime < timeout) {
+      try {
+        const currentUrl = page.url();
+        if (this.isServiceNowUrl(currentUrl)) {
+          this.logger.info(`On ServiceNow: ${currentUrl}`);
+          return true;
+        }
+      } catch {
+        // Page might be navigating, ignore errors
+      }
+      await page.waitForTimeout(pollInterval);
     }
+
+    this.logger.error(
+      `Timeout waiting for ServiceNow redirect. Current URL: ${page.url()}`,
+    );
+    return false;
   }
 
   /**
@@ -582,7 +612,8 @@ export class AzureADAutomator {
 
         // Check for ServiceNow-specific URL patterns (comprehensive list)
         const hasServiceNowPath =
-          url.includes("/nav") || // Navigator UI
+          url.includes("/nav") || // Navigator UI (includes navpage.do)
+          url.includes("/navpage") || // navpage.do explicitly
           url.includes("/now/") || // Next Experience (Agent Workspace, etc.)
           url.includes("/$") || // Dollar sign paths
           url.includes("/welcome") || // Welcome page
@@ -605,6 +636,7 @@ export class AzureADAutomator {
       const isServiceNowDomain = urlObj.hostname.includes("service-now.com");
       const hasServiceNowPath =
         url.includes("/nav") ||
+        url.includes("/navpage") ||
         url.includes("/now/") ||
         url.includes("/$") ||
         url.includes("/welcome") ||
