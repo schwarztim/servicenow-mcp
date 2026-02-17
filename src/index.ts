@@ -30,7 +30,7 @@ import {
   refreshSession,
 } from "./auth-browser.js";
 import { BrowserAuthManager } from "./browser-auth.js";
-import { getAuthHeaders, clearCache as clearAuthCache } from "./auth.js";
+import { getAuthHeaders, clearCache as clearAuthCache, triggerSSOAuth } from "./auth.js";
 import { autoSetup } from "./auto-setup.js";
 import { ConfigManager } from "./auth-config.js";
 import { CredentialStore } from "./credential-store.js";
@@ -2096,17 +2096,29 @@ class ServiceNowClient {
         body: body ? JSON.stringify(body) : undefined,
       });
 
-      // Handle auth errors: clear cache and retry with fresh headless auth
+      // Handle auth errors
       if (
         (response.status === 401 || response.status === 403) &&
-        this.authMethod === "browser" &&
         retries > 0
       ) {
-        console.error(
-          `⚠️  Auth failed (${response.status}). Clearing cache, re-authenticating headless...`,
-        );
-        clearAuthCache();
-        return makeAuthenticatedRequest(retries - 1);
+        if (this.authMethod === "basic") {
+          // Basic auth failed — try falling back to cookie-based auth from host
+          console.error(
+            `⚠️  Basic auth failed (${response.status}). Trying cookie-based auth from host...`,
+          );
+          const authHeaders = await getAuthHeaders();
+          if (authHeaders.Cookie) {
+            this.authMethod = "browser";
+            this.authHeader = "";
+            return makeAuthenticatedRequest(retries - 1);
+          }
+        } else if (this.authMethod === "browser") {
+          console.error(
+            `⚠️  Cookie auth failed (${response.status}). Clearing cache, retrying...`,
+          );
+          clearAuthCache();
+          return makeAuthenticatedRequest(retries - 1);
+        }
       }
 
       if (!response.ok) {
@@ -3001,7 +3013,7 @@ class ServiceNowMcpServer {
       case "auth_browser": {
         // Use clean headless auth — clears cache to force fresh login
         clearAuthCache();
-        const headers = await getAuthHeaders();
+        const headers = await triggerSSOAuth();
         return {
           status: "success",
           message: "Headless authentication completed. Ready to use immediately.",

@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 
 const PROJECT_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const CACHE_FILE = join(PROJECT_DIR, ".cookie-cache.json");
+// Volume-mounted cookie file from host-auth.mjs (host captures SSO cookies, container reads them)
+const MOUNTED_COOKIE_FILE = process.env.SERVICENOW_COOKIE_FILE || "/root/.servicenow-mcp/cookies.json";
 const CACHE_TTL = 8 * 60 * 60 * 1000; // 8 hours
 const TARGET_URL = process.env.SERVICENOW_INSTANCE_URL || "https://instance.service-now.com";
 const TARGET_HOST = new URL(TARGET_URL).hostname;
@@ -36,12 +38,18 @@ interface CachedAuth {
 }
 
 function loadCache(): Record<string, string> | null {
-  if (!existsSync(CACHE_FILE)) return null;
-  try {
-    const data: CachedAuth = JSON.parse(readFileSync(CACHE_FILE, "utf-8"));
-    if (Date.now() - data.capturedAt < CACHE_TTL) return data.headers;
-    console.error("⚠️  Cookie cache expired");
-  } catch { /* corrupt cache */ }
+  // Try local cache first, then volume-mounted host cookie file
+  for (const file of [CACHE_FILE, MOUNTED_COOKIE_FILE]) {
+    if (!existsSync(file)) continue;
+    try {
+      const data: CachedAuth = JSON.parse(readFileSync(file, "utf-8"));
+      if (data.headers?.Cookie && Date.now() - data.capturedAt < CACHE_TTL) {
+        console.error(`✅ Loaded auth from ${file === CACHE_FILE ? "local cache" : "host cookie file"}`);
+        return data.headers;
+      }
+    } catch { /* corrupt cache */ }
+  }
+  console.error("⚠️  No valid cookie cache found (checked local + host-mounted)");
   return null;
 }
 
@@ -55,10 +63,20 @@ export function clearCache(): void {
 }
 
 function keychainGet(label: string): string {
-  return execSync(`security find-generic-password -l "${label}" -w`, {
-    encoding: "utf-8",
-    stdio: ["pipe", "pipe", "pipe"],
-  }).trim();
+  // Fall back to env vars in containerized environments where macOS Keychain is unavailable
+  const envMap: Record<string, string> = {
+    "corp-sso-email": process.env.SERVICENOW_USERNAME || "",
+    "corp-sso-password": process.env.SERVICENOW_PASSWORD || "",
+  };
+  if (envMap[label]) return envMap[label];
+  try {
+    return execSync(`security find-generic-password -l "${label}" -w`, {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+  } catch {
+    return "";
+  }
 }
 
 async function authenticate(): Promise<Record<string, string>> {
@@ -226,7 +244,26 @@ export async function getAuthHeaders(): Promise<Record<string, string>> {
   const cached = loadCache();
   if (cached && cached.Cookie) return cached;
 
-  // Deduplicate concurrent calls
+  // Check for pre-set session token env vars (skip SSO entirely)
+  if (process.env.SERVICENOW_SESSION_TOKEN) {
+    const headers: Record<string, string> = {
+      Cookie: process.env.SERVICENOW_SESSION_TOKEN,
+      Accept: "application/json",
+    };
+    if (process.env.SERVICENOW_USER_TOKEN) {
+      headers["X-UserToken"] = process.env.SERVICENOW_USER_TOKEN;
+    }
+    return headers;
+  }
+
+  // Don't auto-trigger headless SSO — it blocks on MFA.
+  // Return empty headers; user should call auth_browser or auth_import_cookies first.
+  console.error("⚠️  No cached auth. Use auth_browser or auth_import_cookies to authenticate.");
+  return { Accept: "application/json" };
+}
+
+export async function triggerSSOAuth(): Promise<Record<string, string>> {
+  // Explicit SSO trigger (called by auth_browser tool only)
   if (!authPromise) {
     authPromise = authenticate().finally(() => { authPromise = null; });
   }
