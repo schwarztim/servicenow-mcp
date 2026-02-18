@@ -2106,6 +2106,7 @@ class ServiceNowClient {
           console.error(
             `⚠️  Basic auth failed (${response.status}). Trying cookie-based auth from host...`,
           );
+          clearAuthCache();
           const authHeaders = await getAuthHeaders();
           if (authHeaders.Cookie) {
             this.authMethod = "browser";
@@ -2113,11 +2114,22 @@ class ServiceNowClient {
             return makeAuthenticatedRequest(retries - 1);
           }
         } else if (this.authMethod === "browser") {
+          // Cookie auth failed — clear local cache and re-read host file (may have been refreshed externally)
           console.error(
-            `⚠️  Cookie auth failed (${response.status}). Clearing cache, retrying...`,
+            `⚠️  Cookie auth failed (${response.status}). Clearing local cache, re-reading host cookies...`,
           );
           clearAuthCache();
-          return makeAuthenticatedRequest(retries - 1);
+          const freshHeaders = await getAuthHeaders();
+          if (freshHeaders.Cookie) {
+            return makeAuthenticatedRequest(retries - 1);
+          }
+          // Host cookies also stale — need host re-auth
+          const errorText = await response.text().catch(() => "");
+          throw new Error(
+            `ServiceNow session expired (${response.status}). Run host-auth to re-authenticate:\n` +
+            `  cd ~/Scripts/mcp-servers/servicenow-mcp && node scripts/host-auth.mjs\n` +
+            errorText,
+          );
         }
       }
 

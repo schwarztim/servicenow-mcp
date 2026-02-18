@@ -58,6 +58,34 @@ function saveCache(headers: Record<string, string>): void {
   writeFileSync(CACHE_FILE, JSON.stringify(data, null, 2));
 }
 
+// Session keepalive — ping ServiceNow periodically to prevent session timeout
+let keepaliveInterval: ReturnType<typeof setInterval> | null = null;
+let lastKnownHeaders: Record<string, string> | null = null;
+
+export function startSessionKeepalive(): void {
+  if (keepaliveInterval) return;
+  const KEEPALIVE_MS = 10 * 60 * 1000; // 10 minutes
+  keepaliveInterval = setInterval(async () => {
+    const headers = lastKnownHeaders || loadCache();
+    if (!headers?.Cookie) return;
+    try {
+      const resp = await fetch(`${TARGET_URL}/api/now/table/sys_user?sysparm_limit=1&sysparm_fields=sys_id`, {
+        headers: { ...headers, Accept: "application/json" },
+      });
+      if (resp.ok) {
+        console.error("🏓 Session keepalive OK");
+        // Re-save with fresh timestamp so TTL doesn't expire
+        saveCache(headers);
+      } else {
+        console.error(`⚠️  Session keepalive failed: ${resp.status}`);
+      }
+    } catch (e) {
+      console.error(`⚠️  Session keepalive error: ${(e as Error).message}`);
+    }
+  }, KEEPALIVE_MS);
+  console.error(`🏓 Session keepalive started (every ${KEEPALIVE_MS / 60000}min)`);
+}
+
 export function clearCache(): void {
   try { if (existsSync(CACHE_FILE)) writeFileSync(CACHE_FILE, "{}"); } catch {}
 }
@@ -242,7 +270,11 @@ let authPromise: Promise<Record<string, string>> | null = null;
 
 export async function getAuthHeaders(): Promise<Record<string, string>> {
   const cached = loadCache();
-  if (cached && cached.Cookie) return cached;
+  if (cached && cached.Cookie) {
+    lastKnownHeaders = cached;
+    startSessionKeepalive();
+    return cached;
+  }
 
   // Check for pre-set session token env vars (skip SSO entirely)
   if (process.env.SERVICENOW_SESSION_TOKEN) {
