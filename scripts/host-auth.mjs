@@ -247,6 +247,8 @@ async function main() {
 
     const cookieHeader = snCookies.map(c => `${c.name}=${c.value}`).join("; ");
 
+    // Primary format: { headers, capturedAt } — used by auth.ts loadCache()
+    // Also includes loadCookies() fields for auth-browser.ts compatibility
     const result = {
       headers: {
         Cookie: cookieHeader,
@@ -257,6 +259,10 @@ async function main() {
       instanceUrl: INSTANCE_URL,
       cookieCount: snCookies.length,
       hasUserToken: !!gCk,
+      // Fields for auth-browser.ts loadCookies()
+      cookies: snCookies,
+      userToken: gCk || "",
+      timestamp: new Date().toISOString(),
     };
 
     writeFileSync(COOKIE_FILE, JSON.stringify(result, null, 2));

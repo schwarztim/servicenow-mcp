@@ -56,3 +56,4 @@ temp/
 
 # Cookie cache (session tokens)
 .cookie-cache.json
+nscacert.pem
