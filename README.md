@@ -270,6 +270,15 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for de
 - Built with [@modelcontextprotocol/sdk](https://github.com/modelcontextprotocol/sdk)
 - Browser automation powered by [Playwright](https://playwright.dev/) with Firefox
 
+## Hermes Integration (Optional)
+
+For containerized deployment, this MCP supports [Hermes](https://github.com/schwarztim/hermes) for centralized authentication:
+
+1. Install and start the Hermes broker on your host
+2. Set `HERMES_URL` and `HERMES_CLIENT_TOKEN` environment variables
+3. When these env vars are present, auth tokens are fetched from Hermes automatically
+4. When absent, the MCP handles authentication directly (standalone mode)
+
 ## License
 
 MIT © Timothy Schwarz - see [LICENSE](LICENSE) for details

@@ -61,5 +61,9 @@
     "@types/prompts": "^2.4.9",
     "tsx": "^4.7.0",
     "typescript": "^5.3.0"
+  },
+  "optionalDependencies": {
+    "@hermes/auth-core": "github:schwarztim/hermes#phase-0-1-impl",
+    "@hermes/client": "github:schwarztim/hermes#phase-0-1-impl"
   }
 }
