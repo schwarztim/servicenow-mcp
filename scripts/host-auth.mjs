@@ -198,44 +198,33 @@ async function main() {
       await page.waitForTimeout(5000);
     }
 
-    // Activate REST API session
-    console.log("🔧 Activating REST API session...");
+    // Capture g_ck via request interception — the SPA sends X-UserToken on every API call.
+    // page.evaluate on /session_info fires before the SPA initializes and always returns "".
+    console.log("🔧 Capturing g_ck via request interception...");
     let gCk = "";
-    try {
-      gCk = await page.evaluate(async () => {
-        const r = await fetch("/api/now/ui/user/session_info", {
-          credentials: "same-origin",
-          headers: { Accept: "application/json" },
-        });
-        if (r.ok) {
-          const d = await r.json();
-          return d?.result?.g_ck || "";
-        }
-        return "";
-      });
-    } catch (e) {
-      console.warn("⚠️  Could not get g_ck from session_info:", e.message);
-    }
+    await page.route("**/*", async (route, request) => {
+      const token = request.headers()["x-usertoken"];
+      if (token && !gCk) {
+        gCk = token;
+        console.log("🔑 Captured g_ck from outgoing request");
+      }
+      await route.continue();
+    });
 
-    // Also try frames (navpage.do)
-    if (!gCk) {
+    // Navigate to navpage.do — forces the SPA to load and emit API requests with X-UserToken
+    console.log("🔧 Loading navpage.do to trigger SPA requests...");
+    await page.goto(`${INSTANCE_URL}/navpage.do`, { waitUntil: "domcontentloaded", timeout: 30000 });
+    // Poll window.g_ck as fallback while waiting for intercepted requests
+    for (let i = 0; i < 10 && !gCk; i++) {
+      await page.waitForTimeout(1000);
       for (const frame of page.frames()) {
         try {
-          gCk = await frame.evaluate(() => window.g_ck || "");
-          if (gCk) break;
+          const val = await frame.evaluate(() => window.g_ck || "");
+          if (val) { gCk = val; break; }
         } catch { /* cross-origin */ }
       }
     }
-
-    // Make a REST call to ensure API session is active
-    try {
-      await page.evaluate(async () => {
-        await fetch("/api/now/table/sys_user?sysparm_limit=1&sysparm_fields=sys_id", {
-          credentials: "same-origin",
-          headers: { Accept: "application/json" },
-        });
-      });
-    } catch { /* ignore */ }
+    await page.unroute("**/*");
 
     // Capture cookies
     const allCookies = await context.cookies();
@@ -286,6 +275,7 @@ async function main() {
       console.log(`✅ Verified — API working (${JSON.stringify(data?.result?.[0]?.user_name || "ok")})`);
     } else {
       console.error(`⚠️  Verification failed: ${verifyResp.status}`);
+      throw new Error(`API verification failed with ${verifyResp.status} — cookies captured but session not valid`);
     }
 
   } finally {

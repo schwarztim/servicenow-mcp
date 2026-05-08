@@ -1,51 +1,54 @@
-import keytar from "keytar";
+import { VaultStore } from "node-vault-mcp";
 
 const SERVICE_NAME = "servicenow-mcp";
 const CORP_SSO_SERVICE = "corp-sso";
+const store = new VaultStore();
 
 export class CredentialStore {
   /**
-   * Store password in system keychain
+   * Store password in the shared vault
    */
   async setPassword(email: string, password: string): Promise<void> {
-    await keytar.setPassword(SERVICE_NAME, email, password);
+    await store.setPassword(SERVICE_NAME, email, password);
   }
 
   /**
-   * Retrieve password from system keychain
-   * Checks corp-sso keychain entries first, then falls back to servicenow-mcp
+   * Retrieve password from the shared vault.
+   * Checks corp-sso entries first, then falls back to servicenow-mcp.
    */
   async getPassword(email: string): Promise<string | null> {
-    // Try corp-sso keychain first (preferred)
     try {
-      const corpPassword = await keytar.getPassword(CORP_SSO_SERVICE, "password");
+      const corpPassword = await store.getPassword(CORP_SSO_SERVICE, "password");
       if (corpPassword) {
         return corpPassword;
       }
-    } catch { /* fall through */ }
+    } catch {
+      /* fall through */
+    }
 
-    // Fallback to servicenow-mcp keychain
-    return await keytar.getPassword(SERVICE_NAME, email);
+    return await store.getPassword(SERVICE_NAME, email);
   }
 
   /**
-   * Retrieve email from corp-sso keychain, or return the provided email
+   * Retrieve email from corp-sso entries, or return the provided email
    */
   async getEmail(fallbackEmail?: string): Promise<string | null> {
     try {
-      const corpEmail = await keytar.getPassword(CORP_SSO_SERVICE, "email");
+      const corpEmail = await store.getPassword(CORP_SSO_SERVICE, "email");
       if (corpEmail) {
         return corpEmail;
       }
-    } catch { /* fall through */ }
+    } catch {
+      /* fall through */
+    }
     return fallbackEmail || null;
   }
 
   /**
-   * Delete password from system keychain
+   * Delete password from the shared vault
    */
   async deletePassword(email: string): Promise<boolean> {
-    return await keytar.deletePassword(SERVICE_NAME, email);
+    return await store.deletePassword(SERVICE_NAME, email);
   }
 
   /**
