@@ -37,6 +37,79 @@ interface CachedAuth {
   capturedAt: number;
 }
 
+/**
+ * Load auth headers from Hermes broker if HERMES_URL + HERMES_CLIENT_TOKEN are set.
+ *
+ * Hermes is the canonical credential broker. When configured, it owns the
+ * full lifecycle: refresh, autoReacquire on expiry, headless SSO reseed.
+ * snow-mcp becomes a thin consumer instead of running its own parallel SSO.
+ *
+ * The /token/servicenow/session endpoint returns:
+ *   { accessToken: "<full Cookie header>", extra: { g_ck: "<csrf>" }, ... }
+ * which maps directly to snow-mcp's headers cache shape.
+ *
+ * On 409 (ACQUIRE_REQUIRED / INTERACTIVE_AUTH_REQUIRED) or any non-2xx,
+ * returns null so the caller falls through to local cache / local SSO.
+ * This preserves resilience: if Hermes is down or the operator hasn't
+ * acquired the servicenow credential yet, snow-mcp still works in legacy mode.
+ */
+async function loadFromHermes(): Promise<Record<string, string> | null> {
+  const hermesUrl = process.env.HERMES_URL;
+  const hermesToken = process.env.HERMES_CLIENT_TOKEN;
+  if (!hermesUrl || !hermesToken) return null;
+
+  try {
+    const resp = await fetch(`${hermesUrl}/token/servicenow/session`, {
+      headers: { Authorization: `Bearer ${hermesToken}` },
+    });
+
+    if (resp.status === 409) {
+      const body = (await resp.json().catch(() => ({}))) as {
+        code?: string;
+        remediation?: string;
+      };
+      console.error(
+        `⚠️  Hermes /token/servicenow/session returned 409 (${body.code ?? "unknown"}). ` +
+          `Remediation: ${body.remediation ?? "run `hermes acquire servicenow`"}. ` +
+          `Falling through to local auth.`,
+      );
+      return null;
+    }
+
+    if (!resp.ok) {
+      console.error(
+        `⚠️  Hermes /token/servicenow/session returned HTTP ${resp.status}. Falling through to local auth.`,
+      );
+      return null;
+    }
+
+    const body = (await resp.json()) as {
+      accessToken?: string;
+      extra?: { g_ck?: string };
+    };
+
+    if (!body.accessToken) {
+      console.error("⚠️  Hermes returned a token bundle without accessToken. Falling through to local auth.");
+      return null;
+    }
+
+    const headers: Record<string, string> = {
+      Cookie: body.accessToken,
+      Accept: "application/json",
+    };
+    if (body.extra?.g_ck) {
+      headers["X-UserToken"] = body.extra.g_ck;
+    }
+    console.error(`✅ Loaded auth from Hermes (${body.extra?.g_ck ? "with" : "without"} g_ck)`);
+    return headers;
+  } catch (err) {
+    console.error(
+      `⚠️  Hermes /token error: ${(err as Error).message}. Falling through to local auth.`,
+    );
+    return null;
+  }
+}
+
 function loadCache(): Record<string, string> | null {
   // Try local cache first, then volume-mounted host cookie file
   for (const file of [CACHE_FILE, MOUNTED_COOKIE_FILE]) {
@@ -269,6 +342,18 @@ async function authenticate(): Promise<Record<string, string>> {
 let authPromise: Promise<Record<string, string>> | null = null;
 
 export async function getAuthHeaders(): Promise<Record<string, string>> {
+  // Hermes broker first when configured. Hermes owns the auth lifecycle
+  // (refresh, autoReacquire on expiry, headless SSO reseed). Local cache
+  // + SSO remain as fallback so snow-mcp still works when Hermes is down
+  // or not configured.
+  const fromHermes = await loadFromHermes();
+  if (fromHermes && fromHermes.Cookie) {
+    lastKnownHeaders = fromHermes;
+    saveCache(fromHermes);
+    startSessionKeepalive();
+    return fromHermes;
+  }
+
   const cached = loadCache();
   if (cached && cached.Cookie) {
     lastKnownHeaders = cached;
