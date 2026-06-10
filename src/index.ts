@@ -30,7 +30,13 @@ import {
   refreshSession,
 } from "./auth-browser.js";
 import { BrowserAuthManager } from "./browser-auth.js";
-import { getAuthHeaders, clearCache as clearAuthCache, triggerSSOAuth } from "./auth.js";
+import {
+  getAuthHeaders,
+  clearCache as clearAuthCache,
+  triggerSSOAuth,
+  hermesConfigured,
+  legacyAuthEnabled,
+} from "./auth.js";
 import { autoSetup } from "./auto-setup.js";
 import { ConfigManager } from "./auth-config.js";
 import { CredentialStore } from "./credential-store.js";
@@ -1940,9 +1946,22 @@ class ServiceNowClient {
   private authManager: BrowserAuthManager | null = null;
 
   constructor() {
-    // Priority: Browser auth > Basic auth > Session tokens
-    if (browserAuth) {
-      // Use browser-captured cookies
+    // Hermes is the AUTHORITATIVE auth path when configured. Route every
+    // request through auth.ts::getAuthHeaders() (authMethod "browser"), which
+    // fetches from the broker and fails loud on Hermes errors. The embedded
+    // BrowserAuthManager (auto-renewing Playwright SSO) is NOT instantiated on
+    // the Hermes path — Hermes owns the credential lifecycle. The local
+    // plaintext cookie file is ignored so Hermes alone governs auth.
+    if (hermesConfigured() && !legacyAuthEnabled()) {
+      this.baseUrl = INSTANCE_URL.replace(/\/$/, "");
+      this.authHeader = "";
+      this.sessionCookies = "";
+      this.userToken = "";
+      this.authMethod = "browser";
+      this.authManager = null;
+      console.error("Using Hermes broker as the authoritative auth path");
+    } else if (browserAuth) {
+      // LEGACY: browser-captured cookies (only when Hermes is not authoritative)
       this.baseUrl = browserAuth.instanceUrl;
       this.authHeader = "";
       this.sessionCookies = browserAuth.cookies;
@@ -2113,8 +2132,25 @@ class ServiceNowClient {
             this.authHeader = "";
             return makeAuthenticatedRequest(retries - 1);
           }
+        } else if (this.authMethod === "browser" && hermesConfigured() && !legacyAuthEnabled()) {
+          // Hermes is authoritative — re-fetch from the broker, which owns
+          // refresh / autoReacquire. getAuthHeaders() throws (fail loud) if
+          // Hermes is down; there is NO fallback to embedded SSO here.
+          console.error(
+            `⚠️  ServiceNow returned ${response.status}. Re-fetching credential from Hermes broker...`,
+          );
+          const freshHeaders = await getAuthHeaders(); // throws on Hermes failure
+          if (freshHeaders.Cookie) {
+            return makeAuthenticatedRequest(retries - 1);
+          }
+          const errorText = await response.text().catch(() => "");
+          throw new Error(
+            `ServiceNow session expired (${response.status}) and Hermes did not return a fresh credential.\n` +
+            `Acquire the credential through Hermes (e.g. \`hermes acquire servicenow\`).\n` +
+            errorText,
+          );
         } else if (this.authMethod === "browser") {
-          // Cookie auth failed — clear local cache and re-read host file (may have been refreshed externally)
+          // LEGACY embedded/local cookie path — clear local cache and re-read host file (may have been refreshed externally)
           console.error(
             `⚠️  Cookie auth failed (${response.status}). Clearing local cache, re-reading host cookies...`,
           );
@@ -3045,6 +3081,15 @@ class ServiceNowMcpServer {
       }
 
       case "auth_import_cookies": {
+        // Importing cookies persists a plaintext credential locally. On the
+        // Hermes path the broker owns the credential — never write plaintext.
+        if (hermesConfigured() && !legacyAuthEnabled()) {
+          throw new Error(
+            "Cookie import is disabled: Hermes is the authoritative auth broker and owns the credential. " +
+              "Acquire/refresh via Hermes (e.g. `hermes acquire servicenow`). " +
+              "Set SERVICENOW_LEGACY_AUTH=true only if you must use the embedded/local-cookie fallback.",
+          );
+        }
         const instanceUrl = args.instance_url as string;
         const cookies = args.cookies as string;
         const userToken = args.user_token as string | undefined;

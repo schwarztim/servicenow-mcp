@@ -56,7 +56,34 @@ cd servicenow-mcp
 
 ## Authentication Methods
 
-### 1. Browser SSO (Recommended for Enterprise)
+### Hermes Broker (Authoritative)
+
+[Hermes](https://github.com/schwarztim/hermes) is the authoritative auth broker. When `HERMES_URL` and `HERMES_CLIENT_TOKEN` are both set, every request fetches its ServiceNow credential from Hermes via `GET ${HERMES_URL}/token/${HERMES_SERVICE}/${HERMES_SCHEME}`, and Hermes owns the full lifecycle (acquisition, refresh, autoReacquire on expiry, headless SSO reseed). This MCP becomes a thin consumer — it does not run its own embedded SSO and does not persist plaintext cookies.
+
+```bash
+export SERVICENOW_INSTANCE_URL="https://yourinstance.service-now.com"
+export HERMES_URL="http://127.0.0.1:9876"
+export HERMES_CLIENT_TOKEN="<client token>"
+# Optional (defaults shown):
+# export HERMES_SERVICE="servicenow"
+# export HERMES_SCHEME="session"
+```
+
+Acquire the credential once through Hermes (e.g. `hermes acquire servicenow`); the MCP consumes it on every request.
+
+**Fail-loud contract (no silent fallback):** When Hermes is configured but failing (broker down, 409 `ACQUIRE_REQUIRED`, non-2xx, network error), authentication **fails loud** — the server throws and the request errors. It does **not** silently fall back to the embedded browser / local-cookie path. To permit that fallback (not recommended), set:
+
+```bash
+export SERVICENOW_LEGACY_AUTH="true"
+```
+
+When Hermes is authoritative, the legacy auth tools are disabled: `auth_browser` (embedded SSO) and `auth_import_cookies` (plaintext cookie import) both refuse to run.
+
+### Legacy Methods
+
+The methods below are used **only when Hermes is not configured**, or when `SERVICENOW_LEGACY_AUTH=true`.
+
+#### Legacy 1. Browser SSO
 
 Use the `auth_browser` tool from Claude:
 
@@ -73,9 +100,7 @@ Or from command line:
 npm run auth https://yourinstance.service-now.com
 ```
 
-### 2. Basic Auth (Username/Password)
-
-Set environment variables:
+#### Legacy 2. Basic Auth (Username/Password)
 
 ```bash
 export SERVICENOW_INSTANCE_URL="https://yourinstance.service-now.com"
@@ -83,7 +108,7 @@ export SERVICENOW_USERNAME="your-username"
 export SERVICENOW_PASSWORD="your-password"
 ```
 
-### 3. Session Token Auth
+#### Legacy 3. Session Token Auth
 
 For GraphQL API access:
 

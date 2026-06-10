@@ -6,7 +6,7 @@
 
 import { firefox } from "playwright";
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -37,77 +37,110 @@ interface CachedAuth {
   capturedAt: number;
 }
 
-/**
- * Load auth headers from Hermes broker if HERMES_URL + HERMES_CLIENT_TOKEN are set.
- *
- * Hermes is the canonical credential broker. When configured, it owns the
- * full lifecycle: refresh, autoReacquire on expiry, headless SSO reseed.
- * snow-mcp becomes a thin consumer instead of running its own parallel SSO.
- *
- * The /token/servicenow/session endpoint returns:
- *   { accessToken: "<full Cookie header>", extra: { g_ck: "<csrf>" }, ... }
- * which maps directly to snow-mcp's headers cache shape.
- *
- * On 409 (ACQUIRE_REQUIRED / INTERACTIVE_AUTH_REQUIRED) or any non-2xx,
- * returns null so the caller falls through to local cache / local SSO.
- * This preserves resilience: if Hermes is down or the operator hasn't
- * acquired the servicenow credential yet, snow-mcp still works in legacy mode.
- */
-async function loadFromHermes(): Promise<Record<string, string> | null> {
-  const hermesUrl = process.env.HERMES_URL;
-  const hermesToken = process.env.HERMES_CLIENT_TOKEN;
-  if (!hermesUrl || !hermesToken) return null;
+// ---------------------------------------------------------------------------
+// Hermes broker — AUTHORITATIVE auth path.
+//
+// Hermes is the operator's canonical credential broker. When CONFIGURED
+// (HERMES_URL + HERMES_CLIENT_TOKEN both set) it OWNS the full auth lifecycle:
+// acquisition, refresh, autoReacquire on expiry, headless SSO reseed. This MCP
+// becomes a thin consumer instead of running its own parallel embedded SSO.
+//
+// Fail-loud contract (no silent fallback to embedded browser auth):
+//   - Hermes CONFIGURED but failing  → log ERROR + THROW. The embedded SSO /
+//     local-cookie-cache fallback is gated behind SERVICENOW_LEGACY_AUTH=true
+//     (default off). Without that flag, a configured-but-down broker is a hard
+//     error — it must never silently degrade to the embedded Playwright path.
+//   - Hermes NOT configured          → the embedded/local path is legitimate.
+//
+// Service + scheme are configurable; defaults match the operator convention.
+// ---------------------------------------------------------------------------
+const HERMES_SERVICE = process.env.HERMES_SERVICE || "servicenow";
+const HERMES_SCHEME = process.env.HERMES_SCHEME || "session";
 
+/** True when both Hermes env vars are present — Hermes is the authoritative path. */
+export function hermesConfigured(): boolean {
+  return !!(process.env.HERMES_URL && process.env.HERMES_CLIENT_TOKEN);
+}
+
+/** True when the operator has explicitly opted into legacy embedded auth. */
+export function legacyAuthEnabled(): boolean {
+  return (process.env.SERVICENOW_LEGACY_AUTH || "").toLowerCase() === "true";
+}
+
+class HermesAuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "HermesAuthError";
+  }
+}
+
+/**
+ * Fetch auth headers from the Hermes broker.
+ *
+ * Preconditions: caller has verified hermesConfigured() === true.
+ *
+ * The GET ${HERMES_URL}/token/<service>/<scheme> endpoint returns:
+ *   { accessToken: "<full Cookie header>", extra: { g_ck: "<csrf>" }, ... }
+ * which maps directly to this MCP's headers shape.
+ *
+ * THROWS HermesAuthError on any failure (409, non-2xx, missing token, network).
+ * The caller decides whether a throw is fatal (default) or whether to fall
+ * through to legacy embedded auth (only when SERVICENOW_LEGACY_AUTH=true).
+ */
+async function loadFromHermes(): Promise<Record<string, string>> {
+  const hermesUrl = process.env.HERMES_URL!;
+  const hermesToken = process.env.HERMES_CLIENT_TOKEN!;
+  const endpoint = `${hermesUrl}/token/${HERMES_SERVICE}/${HERMES_SCHEME}`;
+
+  let resp: Response;
   try {
-    const resp = await fetch(`${hermesUrl}/token/servicenow/session`, {
+    resp = await fetch(endpoint, {
       headers: { Authorization: `Bearer ${hermesToken}` },
     });
-
-    if (resp.status === 409) {
-      const body = (await resp.json().catch(() => ({}))) as {
-        code?: string;
-        remediation?: string;
-      };
-      console.error(
-        `⚠️  Hermes /token/servicenow/session returned 409 (${body.code ?? "unknown"}). ` +
-          `Remediation: ${body.remediation ?? "run `hermes acquire servicenow`"}. ` +
-          `Falling through to local auth.`,
-      );
-      return null;
-    }
-
-    if (!resp.ok) {
-      console.error(
-        `⚠️  Hermes /token/servicenow/session returned HTTP ${resp.status}. Falling through to local auth.`,
-      );
-      return null;
-    }
-
-    const body = (await resp.json()) as {
-      accessToken?: string;
-      extra?: { g_ck?: string };
-    };
-
-    if (!body.accessToken) {
-      console.error("⚠️  Hermes returned a token bundle without accessToken. Falling through to local auth.");
-      return null;
-    }
-
-    const headers: Record<string, string> = {
-      Cookie: body.accessToken,
-      Accept: "application/json",
-    };
-    if (body.extra?.g_ck) {
-      headers["X-UserToken"] = body.extra.g_ck;
-    }
-    console.error(`✅ Loaded auth from Hermes (${body.extra?.g_ck ? "with" : "without"} g_ck)`);
-    return headers;
   } catch (err) {
-    console.error(
-      `⚠️  Hermes /token error: ${(err as Error).message}. Falling through to local auth.`,
+    throw new HermesAuthError(
+      `Hermes broker unreachable at ${endpoint}: ${(err as Error).message}`,
     );
-    return null;
   }
+
+  if (resp.status === 409) {
+    const body = (await resp.json().catch(() => ({}))) as {
+      code?: string;
+      remediation?: string;
+    };
+    throw new HermesAuthError(
+      `Hermes ${endpoint} returned 409 (${body.code ?? "ACQUIRE_REQUIRED"}). ` +
+        `Remediation: ${body.remediation ?? `run \`hermes acquire ${HERMES_SERVICE}\``}.`,
+    );
+  }
+
+  if (!resp.ok) {
+    throw new HermesAuthError(
+      `Hermes ${endpoint} returned HTTP ${resp.status}.`,
+    );
+  }
+
+  const body = (await resp.json().catch((err) => {
+    throw new HermesAuthError(
+      `Hermes ${endpoint} returned an unparseable body: ${(err as Error).message}`,
+    );
+  })) as { accessToken?: string; extra?: { g_ck?: string } };
+
+  if (!body.accessToken) {
+    throw new HermesAuthError(
+      `Hermes ${endpoint} returned a token bundle without accessToken.`,
+    );
+  }
+
+  const headers: Record<string, string> = {
+    Cookie: body.accessToken,
+    Accept: "application/json",
+  };
+  if (body.extra?.g_ck) {
+    headers["X-UserToken"] = body.extra.g_ck;
+  }
+  console.error(`✅ Loaded auth from Hermes (${body.extra?.g_ck ? "with" : "without"} g_ck)`);
+  return headers;
 }
 
 function loadCache(): Record<string, string> | null {
@@ -268,10 +301,6 @@ async function authenticate(): Promise<Record<string, string>> {
     await page.goto(TARGET_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForTimeout(5000);
 
-    // Collect cookies
-    const allCookies = await context.cookies();
-    const cookieHeader = allCookies.map(c => `${c.name}=${c.value}`).join("; ");
-
     // Extract g_ck (CSRF token) from window globals and frames
     const tokens: Record<string, string> = await page.evaluate(() => {
       const t: Record<string, string> = {};
@@ -342,16 +371,35 @@ async function authenticate(): Promise<Record<string, string>> {
 let authPromise: Promise<Record<string, string>> | null = null;
 
 export async function getAuthHeaders(): Promise<Record<string, string>> {
-  // Hermes broker first when configured. Hermes owns the auth lifecycle
-  // (refresh, autoReacquire on expiry, headless SSO reseed). Local cache
-  // + SSO remain as fallback so snow-mcp still works when Hermes is down
-  // or not configured.
-  const fromHermes = await loadFromHermes();
-  if (fromHermes && fromHermes.Cookie) {
-    lastKnownHeaders = fromHermes;
-    saveCache(fromHermes);
-    startSessionKeepalive();
-    return fromHermes;
+  // Hermes is the AUTHORITATIVE auth path when configured. It owns the auth
+  // lifecycle (acquisition, refresh, autoReacquire on expiry, headless SSO
+  // reseed). There is NO silent fallback to embedded browser auth: if Hermes
+  // is configured but failing, this throws unless the operator has explicitly
+  // opted into legacy auth via SERVICENOW_LEGACY_AUTH=true.
+  if (hermesConfigured()) {
+    try {
+      const fromHermes = await loadFromHermes();
+      // Hermes owns the credential. Do NOT persist plaintext cookies to the
+      // local cache on the Hermes path — only the legacy path uses .cookie-cache.json.
+      lastKnownHeaders = fromHermes;
+      return fromHermes;
+    } catch (err) {
+      const message = (err as Error).message;
+      if (!legacyAuthEnabled()) {
+        console.error(
+          `❌ Hermes auth failed and SERVICENOW_LEGACY_AUTH is not enabled. ` +
+            `Refusing to fall back to embedded SSO. ${message}`,
+        );
+        throw new HermesAuthError(
+          `ServiceNow auth via Hermes failed: ${message} ` +
+            `Set SERVICENOW_LEGACY_AUTH=true to permit the embedded-browser fallback (not recommended).`,
+        );
+      }
+      console.error(
+        `⚠️  Hermes auth failed; SERVICENOW_LEGACY_AUTH=true — falling through to legacy embedded auth. ${message}`,
+      );
+      // fall through to legacy cache / SSO env path below
+    }
   }
 
   const cached = loadCache();
@@ -380,7 +428,16 @@ export async function getAuthHeaders(): Promise<Record<string, string>> {
 }
 
 export async function triggerSSOAuth(): Promise<Record<string, string>> {
-  // Explicit SSO trigger (called by auth_browser tool only)
+  // Explicit embedded-SSO trigger (called by the auth_browser tool only).
+  // This is a LEGACY embedded-auth path. When Hermes is the authoritative
+  // broker, the embedded Playwright SSO must not run — Hermes owns auth.
+  if (hermesConfigured() && !legacyAuthEnabled()) {
+    throw new HermesAuthError(
+      "Embedded browser SSO is disabled: Hermes is the authoritative auth broker. " +
+        `Acquire the credential through Hermes (e.g. \`hermes acquire ${HERMES_SERVICE}\`). ` +
+        "Set SERVICENOW_LEGACY_AUTH=true only if you must use the embedded-browser fallback.",
+    );
+  }
   if (!authPromise) {
     authPromise = authenticate().finally(() => { authPromise = null; });
   }
